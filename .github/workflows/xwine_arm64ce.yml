@@ -37,7 +37,6 @@ jobs:
           apt update
 
           # Install build essentials and required packages.
-          # mingw-w64 is optional but provides Windows headers/libs if needed.
           apt install -y \
             build-essential git wget xz-utils \
             flex bison pkg-config gettext \
@@ -51,10 +50,18 @@ jobs:
 
           # Download and install LLVM MinGW for aarch64 Linux
           cd /opt
-          wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/20250305/llvm-mingw-20250305-ucrt-ubuntu-20.04-aarch64.tar.xz
-          tar -xf llvm-mingw-*.tar.xz
-          mv llvm-mingw-* llvm-mingw
-          rm llvm-mingw-*.tar.xz
+
+          LLVM_URL='https://github.com/mstorsjo/llvm-mingw/releases/download/20250305/llvm-mingw-20250305-ucrt-ubuntu-20.04-aarch64.tar.xz'
+          wget -q -O llvm-mingw.tar.xz \"\$LLVM_URL\"
+
+          mkdir -p llvm-mingw-extract
+          tar -xf llvm-mingw.tar.xz -C llvm-mingw-extract
+
+          # Find the actual extracted folder (there should be exactly one)
+          EXTRACTED_DIR=\$(find llvm-mingw-extract -maxdepth 1 -type d | tail -n 1)
+          mv \"\$EXTRACTED_DIR\" /opt/llvm-mingw
+
+          rm -rf llvm-mingw-extract llvm-mingw.tar.xz
 
           # Add to PATH permanently for this chroot session
           echo 'export PATH=/opt/llvm-mingw/bin:\$PATH' >> /etc/profile

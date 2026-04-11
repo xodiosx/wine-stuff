@@ -1,4 +1,4 @@
-name: Build Wine ARM64 (Ubuntu RootFS)
+name: Build Wine ARM64EC (RootFS + Full Patch)
 
 on:
   workflow_dispatch:
@@ -8,73 +8,181 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Install host dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y debootstrap qemu-user-static binfmt-support sudo
+      - name: 📦 Install host dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            debootstrap qemu-user-static binfmt-support \
+            git wget tar sudo
 
-    - name: Create Ubuntu ARM64 rootfs
-      run: |
-        export ROOTFS=$PWD/rootfs
-        sudo debootstrap --arch=arm64 jammy $ROOTFS http://ports.ubuntu.com/ubuntu-ports/
+      - name: 🏗️ Create ARM64 Ubuntu rootfs
+        run: |
+          export ROOTFS=$PWD/rootfs
 
-        # Enable ARM emulation
-        sudo cp /usr/bin/qemu-aarch64-static $ROOTFS/usr/bin/
+          sudo debootstrap --arch=arm64 jammy $ROOTFS http://ports.ubuntu.com/ubuntu-ports/
 
-    - name: Setup ARM64 environment (FIXED REPOS)
-      run: |
-        export ROOTFS=$PWD/rootfs
+          sudo cp /usr/bin/qemu-aarch64-static $ROOTFS/usr/bin/
 
-        sudo chroot $ROOTFS bash -c "
-        echo 'deb http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted' > /etc/apt/sources.list
-        echo 'deb http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted' >> /etc/apt/sources.list
-        echo 'deb http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted' >> /etc/apt/sources.list
+      - name: ⚙️ Setup ARM64 environment (FIXED + LLVM TOOLCHAIN)
+        run: |
+          export ROOTFS=$PWD/rootfs
 
-        apt update
+          sudo chroot $ROOTFS bash -c "
+          set -e
 
-        apt install -y \
-          build-essential git wget \
-          clang llvm \
-          flex bison pkg-config \
-          mingw-w64 \
-          libx11-dev libfreetype6-dev libxcursor-dev \
-          libxi-dev libxrandr-dev libxinerama-dev \
-          libxxf86vm-dev libgl1-mesa-dev libosmesa6-dev \
-          libpulse-dev libdbus-1-dev libfontconfig1-dev \
-          libxcomposite-dev libxrender-dev libxext-dev \
-          libudev-dev libvulkan-dev
-        "
+          echo 'deb http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted' > /etc/apt/sources.list
+          echo 'deb http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted' >> /etc/apt/sources.list
+          echo 'deb http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted' >> /etc/apt/sources.list
 
-    - name: Build Wine (NO CROSS COMPILE ❗)
-      run: |
-        export ROOTFS=$PWD/rootfs
+          apt update
 
-        sudo chroot $ROOTFS bash -c "
-        cd /root
+          apt install -y \
+            build-essential git wget \
+            clang lld llvm llvm-tools \
+            flex bison pkg-config gettext \
+            mingw-w64 \
+            libx11-dev libfreetype6-dev libxcursor-dev \
+            libxi-dev libxrandr-dev libxinerama-dev \
+            libxxf86vm-dev libgl1-mesa-dev libosmesa6-dev \
+            libpulse-dev libdbus-1-dev libfontconfig1-dev \
+            libxcomposite-dev libxrender-dev libxext-dev \
+            libudev-dev libvulkan-dev
+          "
 
-        git clone https://gitlab.winehq.org/wine/wine.git
-        cd wine
+      - name: 📥 Clone Wine
+        run: |
+          export ROOTFS=$PWD/rootfs
 
-        mkdir build && cd build
+          sudo chroot $ROOTFS bash -c "
+          cd /root
+          git clone https://gitlab.winehq.org/wine/wine.git
+          cd wine
+          git submodule update --init --recursive
+          "
 
-        ../configure --enable-win64
+      - name: 🧪 APPLY YOUR FULL PATCH SYSTEM (RESTORED)
+        run: |
+          export ROOTFS=$PWD/rootfs
 
-        make -j$(nproc)
-        "
+          sudo chroot $ROOTFS bash -c '
+          cd /root/wine
 
-    - name: Package Wine
-      run: |
-        export ROOTFS=$PWD/rootfs
+          echo "🧪 Starting Wine patch system..."
 
-        sudo chroot $ROOTFS bash -c "
-        cd /root/wine/build
-        make install DESTDIR=/wine-install
-        "
+          # =========================
+          # TMP PATH FIX
+          # =========================
+          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
+            -exec grep -l "/tmp" {} \; 2>/dev/null | xargs sed -i "s|/tmp/|/data/data/com.termux/files/usr/tmp/|g" || true
 
-        sudo tar -czf wine-arm64.tar.gz -C rootfs/wine-install .
+          find server -type f \( -name "*.c" -o -name "*.h" \) \
+            -exec sed -i "s|\"/tmp\"|\"/data/data/com.termux/files/usr/tmp\"|g" {} + || true
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: wine-arm64
-        path: wine-arm64.tar.gz
+          find . -name "file.c" -exec sed -i "s|\"/tmp\"|\"/data/data/com.termux/files/usr/tmp\"|g" {} + || true
+          find . -name "loader.c" -exec sed -i "s|\"/tmp\"|\"/data/data/com.termux/files/usr/tmp\"|g" {} + || true
+          find . -name "server.c" -exec sed -i "s|\"/tmp\"|\"/data/data/com.termux/files/usr/tmp\"|g" {} + || true
+
+          # =========================
+          # ATI / INTERLOCKED FIX
+          # =========================
+          FILE="dlls/atiadlxx/atiadlxx_main.c"
+          if [ -f "$FILE" ]; then
+            sed -i "s/LONG dummy/long dummy/g" "$FILE"
+            sed -i "s|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g" "$FILE"
+          fi
+
+          # =========================
+          # WDSCORE CLEAN
+          # =========================
+          FILE="dlls/wdscore/wdscore.spec"
+          [ -f "$FILE" ] && sed -i "/CDynamicArray/d" "$FILE"
+
+          # =========================
+          # NTDLL FIX
+          # =========================
+          FILE="dlls/ntdll/unix/virtual.c"
+          [ -f "$FILE" ] && sed -i "s/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g" "$FILE"
+
+          # =========================
+          # ARM64EC LOADER PATCHES
+          # =========================
+          FILE="dlls/ntdll/unix/loader.c"
+          [ -f "$FILE" ] && sed -i "s|/x86_64-windows|/aarch64-windows|g" "$FILE"
+
+          FILE="dlls/ntdll/loader.c"
+          if [ -f "$FILE" ]; then
+            sed -i "s|xtajit64\.dll|libarm64ecfex.dll|g" "$FILE"
+            sed -i "s/ULONG buffer\[16\];/ULONG buffer\[32\];/g" "$FILE"
+          fi
+
+          # =========================
+          # WINE INF PATCH
+          # =========================
+          FILE="loader/wine.inf.in"
+          if [ -f "$FILE" ]; then
+            sed -i "s|xtajit64\.dll|libarm64ecfex.dll|g" "$FILE"
+            sed -i "s|xtajit\.dll|libwow64fex.dll|g" "$FILE"
+          fi
+
+          # =========================
+          # FEX FLAGS
+          # =========================
+          FILE="include/winnt.h"
+          if [ -f "$FILE" ]; then
+            grep -q "CONTEXT_ARM64_FEX_YMMSTATE" "$FILE" || \
+            sed -i "/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE (CONTEXT_ARM64 | 0x00000040)" "$FILE"
+          fi
+
+          # =========================
+          # VULKAN VRAM SPOOF
+          # =========================
+          FILE="dlls/winevulkan/vulkan.c"
+          if [ -f "$FILE" ]; then
+            grep -q "WINE_VRAM_SIZE" "$FILE" || sed -i "/memory_properties);/a \
+{ \
+    const char *v = getenv(\"WINE_VRAM_SIZE\"); \
+    uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
+    uint32_t k; \
+    for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
+        if (object->memory_properties.memoryHeaps[k].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
+            object->memory_properties.memoryHeaps[k].size = s; \
+}" "$FILE"
+          fi
+
+          echo "✔ Patch system complete"
+          '
+
+      - name: 🔨 Build Wine inside ARM64 rootfs
+        run: |
+          export ROOTFS=$PWD/rootfs
+
+          sudo chroot $ROOTFS bash -c "
+          cd /root/wine
+
+          mkdir build && cd build
+
+          export CC=clang
+          export CXX=clang++
+          export LD=lld
+
+          ../configure --enable-win64
+
+          make -j\$(nproc)
+          "
+
+      - name: 📦 Package
+        run: |
+          export ROOTFS=$PWD/rootfs
+
+          sudo chroot $ROOTFS bash -c "
+          cd /root/wine/build
+          tar -czf /root/wine-arm64.tar.gz .
+          "
+
+          cp $ROOTFS/root/wine-arm64.tar.gz .
+
+      - name: ⬆️ Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-arm64-custom
+          path: wine-arm64.tar.gz

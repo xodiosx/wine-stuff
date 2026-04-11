@@ -140,15 +140,15 @@ jobs:
           FILE="dlls/winevulkan/vulkan.c"
           if [ -f "$FILE" ]; then
             grep -q "WINE_VRAM_SIZE" "$FILE" || sed -i "/memory_properties);/a \
-{ \
-    const char *v = getenv(\"WINE_VRAM_SIZE\"); \
-    uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
-    uint32_t k; \
-    for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
-        if (object->memory_properties.memoryHeaps[k].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
+             { \
+           const char *v = getenv(\"WINE_VRAM_SIZE\"); \
+          uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
+          uint32_t k; \
+          for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
+            if (object->memory_properties.memoryHeaps[k].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
             object->memory_properties.memoryHeaps[k].size = s; \
-}" "$FILE"
-          fi
+           }" "$FILE"
+             fi
 
           echo "✔ Patch system complete"
           '

@@ -23,7 +23,7 @@ jobs:
 
           sudo cp /usr/bin/qemu-aarch64-static $ROOTFS/usr/bin/
 
-      - name: ⚙️ Setup ARM64 environment (FIXED + LLVM TOOLCHAIN)
+      - name: ⚙️ Setup ARM64 environment (install dependencies + llvm-mingw-w64)
         run: |
           export ROOTFS=$PWD/rootfs
 
@@ -36,11 +36,12 @@ jobs:
 
           apt update
 
+          # Install build essentials and required packages.
+          # llvm-mingw-w64 provides the aarch64-w64-mingw32-clang toolchain.
           apt install -y \
             build-essential git wget \
-            clang lld llvm llvm-tools \
+            llvm-mingw-w64 \
             flex bison pkg-config gettext \
-            mingw-w64 \
             libx11-dev libfreetype6-dev libxcursor-dev \
             libxi-dev libxrandr-dev libxinerama-dev \
             libxxf86vm-dev libgl1-mesa-dev libosmesa6-dev \
@@ -161,10 +162,7 @@ jobs:
 
           mkdir build && cd build
 
-          export CC=clang
-          export CXX=clang++
-          export LD=lld
-
+          # No need to set CC/CXX/LD; llvm-mingw-w64 provides the proper toolchain.
           ../configure --enable-win64
 
           make -j\$(nproc)

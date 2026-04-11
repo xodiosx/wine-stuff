@@ -11,18 +11,26 @@ jobs:
       TMP_FIX: /data/data/com.termux/files/usr/tmp
 
     steps:
-      - name: 📥 Prepare system & fix ARM64 repos
+      - name: 📥 Fix repos (ARM64 + AMD64 properly separated)
         run: |
           sudo dpkg --add-architecture arm64
 
-          # Clean broken cache ghosts 👻
-          sudo apt-get clean
+          # Clean old lists (important)
           sudo rm -rf /var/lib/apt/lists/*
+          sudo apt-get clean
 
-          # Add proper ARM64 repo (ports)
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          # Force correct repo mapping (no more 404 💀)
+          sudo tee /etc/apt/sources.list > /dev/null <<EOF
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy main universe multiverse restricted
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-updates main universe multiverse restricted
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu jammy-backports main universe multiverse restricted
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu jammy-security main universe multiverse restricted
+
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main universe multiverse restricted
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted
+          EOF
 
           sudo apt update
 
@@ -80,7 +88,7 @@ jobs:
           sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE (CONTEXT_ARM64 | 0x00000020)' include/winnt.h 2>/dev/null || true
           sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE (CONTEXT_ARM64 | 0x00000040)' include/winnt.h 2>/dev/null || true
 
-          # Vulkan VRAM fake
+          # Vulkan VRAM spoof
           sed -i '/memory_properties);/a \
           { \
               const char *v = getenv("WINE_VRAM_SIZE"); \

@@ -11,12 +11,26 @@ jobs:
       TMP_FIX: /data/data/com.termux/files/usr/tmp
 
     steps:
-      - name: 📥 Install dependencies
+      - name: 📥 Prepare system & fix ARM64 repos
         run: |
           sudo dpkg --add-architecture arm64
+
+          # Clean broken cache ghosts 👻
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+          # Add proper ARM64 repo (ports)
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe multiverse restricted" | sudo tee /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+          echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe multiverse restricted" | sudo tee -a /etc/apt/sources.list.d/arm64.list
+
           sudo apt update
+
+      - name: 📦 Install dependencies
+        run: |
           sudo apt install -y \
-            git build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            git build-essential \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             mingw-w64 clang llvm flex bison \
             libx11-dev libfreetype6-dev libxcursor-dev \
             libxi-dev libxrandr-dev libxinerama-dev \
@@ -25,13 +39,13 @@ jobs:
             libxcomposite-dev libxrender-dev libxext-dev \
             libudev-dev libvulkan-dev wget
 
-      - name: 📦 Clone Wine source
+      - name: 📥 Clone Wine
         run: |
           git clone https://github.com/wine-mirror/wine.git
           cd wine
           git submodule update --init --recursive
 
-      - name: 🧪 Apply Termux + ARM64EC patches
+      - name: 🧪 Apply patches
         run: |
           cd wine
 
@@ -44,32 +58,29 @@ jobs:
           echo "✔ TMP path fixed"
 
           # Interlocked fix
-          FILE="dlls/atiadlxx/atiadlxx_main.c"
-          if [ -f "$FILE" ]; then
-            sed -i 's/LONG dummy/long dummy/g' "$FILE"
-            sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
-          fi
+          sed -i 's/LONG dummy/long dummy/g' dlls/atiadlxx/atiadlxx_main.c 2>/dev/null || true
+          sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' dlls/atiadlxx/atiadlxx_main.c 2>/dev/null || true
 
           # wdscore cleanup
-          sed -i '/CDynamicArray/d' dlls/wdscore/wdscore.spec || true
+          sed -i '/CDynamicArray/d' dlls/wdscore/wdscore.spec 2>/dev/null || true
 
           # virtual.c fix
-          sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' dlls/ntdll/unix/virtual.c || true
+          sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' dlls/ntdll/unix/virtual.c 2>/dev/null || true
 
-          # loader mappings
-          sed -i 's|/x86_64-windows|/aarch64-windows|g' dlls/ntdll/unix/loader.c || true
+          # loader fixes
+          sed -i 's|/x86_64-windows|/aarch64-windows|g' dlls/ntdll/unix/loader.c 2>/dev/null || true
+          sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' dlls/ntdll/loader.c 2>/dev/null || true
+          sed -i 's/ULONG buffer\[16\];/ULONG buffer\[32\];/g' dlls/ntdll/loader.c 2>/dev/null || true
 
-          sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' dlls/ntdll/loader.c || true
-          sed -i 's/ULONG buffer\[16\];/ULONG buffer\[32\];/g' dlls/ntdll/loader.c || true
-
-          sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' loader/wine.inf.in || true
-          sed -i 's/xtajit\.dll/libwow64fex.dll/g' loader/wine.inf.in || true
+          # wine.inf
+          sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' loader/wine.inf.in 2>/dev/null || true
+          sed -i 's/xtajit\.dll/libwow64fex.dll/g' loader/wine.inf.in 2>/dev/null || true
 
           # FEX flags
-          sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE (CONTEXT_ARM64 | 0x00000020)' include/winnt.h || true
-          sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE (CONTEXT_ARM64 | 0x00000040)' include/winnt.h || true
+          sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE (CONTEXT_ARM64 | 0x00000020)' include/winnt.h 2>/dev/null || true
+          sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE (CONTEXT_ARM64 | 0x00000040)' include/winnt.h 2>/dev/null || true
 
-          # Vulkan VRAM spoof
+          # Vulkan VRAM fake
           sed -i '/memory_properties);/a \
           { \
               const char *v = getenv("WINE_VRAM_SIZE"); \
@@ -78,7 +89,7 @@ jobs:
               for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
                   if (object->memory_properties.memoryHeaps[k].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
                       object->memory_properties.memoryHeaps[k].size = s; \
-          }' dlls/winevulkan/vulkan.c || true
+          }' dlls/winevulkan/vulkan.c 2>/dev/null || true
 
           echo "✔ Internal patches applied"
 
@@ -95,7 +106,7 @@ jobs:
 
           echo "✔ External patches applied"
 
-      - name: ⚙️ Configure build
+      - name: ⚙️ Configure
         run: |
           cd wine
           mkdir build && cd build
@@ -106,12 +117,12 @@ jobs:
             --host=aarch64-linux-gnu \
             --enable-win64
 
-      - name: 🔨 Build Wine
+      - name: 🔨 Build
         run: |
           cd wine/build
           make -j$(nproc)
 
-      - name: 📦 Package build
+      - name: 📦 Package
         run: |
           cd wine/build
           tar -czf wine-arm64ec.tar.gz *

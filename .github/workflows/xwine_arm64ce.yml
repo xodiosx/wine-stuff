@@ -1,127 +1,195 @@
-name: Build Wine ARM64EC (Native ARM64)
+name: Build & Deploy Engine
 
-on:
-  workflow_dispatch:
+on: [push, pull_request]
 
 jobs:
   build:
-    runs-on: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            targetos: linux
+            targetarch: amd64
+
+          - os: ubuntu-22.04
+            targetos: linux
+            targetarch: i386
+
+          - os: ubuntu-22.04-arm
+            targetos: linux
+            targetarch: arm64
+
+          - os: ubuntu-22.04-arm
+            targetos: linux
+            targetarch: armhf
+
+          - os: ubuntu-24.04
+            targetos: linux
+            targetarch: riscv64
+            cross: true
+
+          - os: ubuntu-22.04
+            targetos: linux
+            targetarch: ppc64el
+            cross: true
+
+          - os: ubuntu-latest
+            targetos: android
+            targetarch: multiarch
+
+          - os: ubuntu-latest
+            targetos: nswitch
+            targetarch: arm64
+
+          - os: ubuntu-latest
+            targetos: psvita
+            targetarch: armv7hf
+
+          - os: windows-latest
+            targetos: win32
+            targetarch: amd64
+
+          - os: windows-2022
+            targetos: win32
+            targetarch: i386
+
+          - os: macos-14
+            targetos: apple
+            targetarch: arm64
+
+          - os: macos-latest
+            targetos: ios
+            targetarch: arm64
+
+          - os: macos-15-intel
+            targetos: apple
+            targetarch: amd64
+
+    env:
+      SDL_VERSION: 2.32.10
+      FFMPEG_VERSION: 8.1
+      GH_CPU_ARCH: ${{ matrix.targetarch }}
+      GH_CPU_OS: ${{ matrix.targetos }}
+      GH_CROSSCOMPILING: ${{ matrix.cross }}
 
     steps:
-      - name: 📦 Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y \
-            build-essential git wget xz-utils ccache \
-            flex bison pkg-config gettext \
-            mingw-w64 \
-            libx11-dev libfreetype6-dev libxcursor-dev \
-            libxi-dev libxrandr-dev libxinerama-dev \
-            libxxf86vm-dev libgl1-mesa-dev libosmesa6-dev \
-            libpulse-dev libdbus-1-dev libfontconfig1-dev \
-            libxcomposite-dev libxrender-dev libxext-dev \
-            libudev-dev libvulkan-dev
-
-      # =========================
-      # CACHE LLVM
-      # =========================
-      - name: 💾 Cache llvm-mingw
-        uses: actions/cache@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          path: /opt/llvm-mingw
-          key: llvm-mingw-arm64-v1
+          submodules: recursive
 
-      - name: ⚙️ Install LLVM MinGW
+      # -------------------------
+      # INSTALL DEPS
+      # -------------------------
+      - name: Install dependencies
+        run: bash scripts/gha/deps_${{ matrix.targetos }}.sh
+
+      # -------------------------
+      # APPLY PATCHES (FIXED)
+      # -------------------------
+      - name: Apply Wine patches
+        if: matrix.targetos == 'linux'
         run: |
-          if [ ! -d /opt/llvm-mingw ]; then
-            sudo mkdir -p /opt
-            cd /opt
+          set -e
 
-            wget -q -O llvm.tar.xz https://github.com/mstorsjo/llvm-mingw/releases/download/20250305/llvm-mingw-20250305-ucrt-ubuntu-20.04-aarch64.tar.xz
-
-            mkdir tmp
-            tar -xf llvm.tar.xz -C tmp
-            sudo mv tmp/* /opt/llvm-mingw
-
-            rm -rf tmp llvm.tar.xz
-          fi
-
-          echo "/opt/llvm-mingw/bin" >> $GITHUB_PATH
-
-      # =========================
-      # CACHE WINE SOURCE
-      # =========================
-      - name: 💾 Cache Wine source
-        uses: actions/cache@v4
-        with:
-          path: wine
-          key: wine-src-v1
-
-      - name: 📥 Clone Wine
-        run: |
-          if [ ! -d wine ]; then
-            git clone https://gitlab.winehq.org/wine/wine.git
-            cd wine
-            git submodule update --init --recursive
-          fi
-
-      # =========================
-      # PATCH SYSTEM (UNCHANGED)
-      # =========================
-      - name: 🧪 Apply patches
-        run: |
-          cd wine
+          cd wine || exit 1
 
           echo "🧪 Applying patches..."
 
-          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
-            -exec sed -i "s|/tmp/|/data/data/com.termux/files/usr/tmp/|g" {} + || true
+          git submodule update --init --recursive
+
+          MATCHES=$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
+            -exec grep -l "/tmp" {} \; 2>/dev/null)
+
+          if [ -n "$MATCHES" ]; then
+            echo "$MATCHES" | xargs sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g'
+          else
+            echo "✔ No /tmp matches found"
+          fi
+
+          find server -type f \( -name "*.c" -o -name "*.h" \) \
+            -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
+
+          find . -name "file.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
+          find . -name "loader.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
+          find . -name "server.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
+
+          echo "✔ 路径修复完成"
 
           FILE="dlls/atiadlxx/atiadlxx_main.c"
-          [ -f "$FILE" ] && sed -i "s/LONG dummy/long dummy/g" "$FILE"
+          [ -f "$FILE" ] && sed -i 's/LONG dummy/long dummy/g' "$FILE"
 
           FILE="dlls/wdscore/wdscore.spec"
-          [ -f "$FILE" ] && sed -i "/CDynamicArray/d" "$FILE"
+          [ -f "$FILE" ] && sed -i '/CDynamicArray/d' "$FILE"
 
           FILE="dlls/ntdll/unix/virtual.c"
-          [ -f "$FILE" ] && sed -i "s/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g"
+          [ -f "$FILE" ] && sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' "$FILE"
 
-          echo "✔ Patch complete"
+          FILE="dlls/ntdll/unix/loader.c"
+          [ -f "$FILE" ] && sed -i 's|/x86_64-windows|/aarch64-windows|g' "$FILE"
 
-      # =========================
-      # CACHE BUILD
-      # =========================
-      - name: 💾 Cache build
-        uses: actions/cache@v4
-        with:
-          path: wine/build
-          key: wine-build-v1
+          FILE="dlls/ntdll/loader.c"
+          [ -f "$FILE" ] && sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$FILE"
 
-      # =========================
-      # BUILD (FAST)
-      # =========================
-      - name: 🔨 Build Wine
-        run: |
-          export CC="ccache clang"
-          export CXX="ccache clang++"
+          INF="loader/wine.inf.in"
+          [ -f "$INF" ] && sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' "$INF"
 
-          cd wine
-          mkdir -p build && cd build
+          FILE="include/winnt.h"
+          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
+            sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE (CONTEXT_ARM64 | 0x00000020)' "$FILE"
+            sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE (CONTEXT_ARM64 | 0x00000040)' "$FILE"
+          fi
 
-          ../configure --enable-win64 --disable-tests
+          PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
+          for P in 1.patch 2.patch; do
+            wget -q -O "$P" "$PATCH_BASE/$P"
 
-          make -j$(nproc)
+            if git apply --check "$P" > /dev/null 2>&1; then
+              git apply --whitespace=fix "$P"
+            elif git apply --3way --check "$P" > /dev/null 2>&1; then
+              git apply --3way --whitespace=fix "$P"
+            else
+              git apply --reject --whitespace=fix "$P" || true
+            fi
+          done
 
-      # =========================
-      # PACKAGE
-      # =========================
-      - name: 📦 Package
-        run: |
-          cd wine/build
-          tar -czf ../../wine-arm64.tar.gz .
+          echo "✔ All patch processes completed"
 
-      - name: ⬆️ Upload artifact
+      # -------------------------
+      # BUILD
+      # -------------------------
+      - name: Build engine
+        env:
+          FWGS_PFX_PASSWORD: ${{ secrets.FWGS_PFX_PASSWORD }}
+        run: bash scripts/gha/build_${{ matrix.targetos }}.sh
+
+      # -------------------------
+      # ARTIFACTS
+      # -------------------------
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: wine-arm64-native
-          path: wine-arm64.tar.gz
+          name: artifact-${{ matrix.targetos }}-${{ matrix.targetarch }}
+          path: artifacts/*
+
+  # -------------------------
+  # RELEASE
+  # -------------------------
+  release:
+    name: Upload releases
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/gha/make_release.sh "Xash3D FWGS" "${{ github.ref_name }}"

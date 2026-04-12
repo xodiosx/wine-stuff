@@ -240,12 +240,12 @@ jobs:
               }' "$FILE"
           fi
 
-          # 9. GStreamer 1.20 compatibility – replace GstBufferMapInfo with GstMapInfo globally in winegstreamer
+          # 9. GStreamer 1.20 compatibility – replace GstBufferMapInfo with GstMapInfo globally
           echo "Fixing GstBufferMapInfo -> GstMapInfo for GStreamer 1.20 in all winegstreamer files..."
           find dlls/winegstreamer -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/GstBufferMapInfo/GstMapInfo/g' {} +
           echo "✔ GStreamer compatibility patch applied"
 
-          # External patches from URL
+          # External patches from URL (may be x86_64-specific; they won't break build)
           export PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
           PATCH_FILES="1.patch 2.patch"
           echo "Applying external patches from $PATCH_BASE..."
@@ -285,7 +285,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # Configure and Build (with error filtering)
+      # Configure and Build (with widl pre‑build to avoid stdole2.tlb error)
       # ------------------------------------------------------------
       - name: 🔨 Build Wine
         run: |
@@ -313,10 +313,15 @@ jobs:
             --without-pcap \
             --without-pcsclite
 
-          # Build with error filtering (shows only errors in log)
+          # Build the IDL compiler first to avoid stdole2.tlb errors in parallel builds
+          echo "Building widl (IDL compiler) first..."
+          make -j$(nproc) tools/widl
+
+          # Now build everything (including stdole2.tlb generation)
           set -o pipefail
           make -j$(nproc) 2>&1 | tee build.log | grep -E --line-buffered "error:|Error:|undefined reference|multiple definition|ld returned|make\[|FAILED:"
-          # Check if any errors occurred
+
+          # Check for errors
           if grep -q -E "error:|Error:|undefined reference|multiple definition" build.log; then
             echo "::error::Build failed. Errors found in build.log. See raw logs for details."
             exit 1
@@ -365,8 +370,9 @@ jobs:
             - Branch: ${{ github.event.inputs.wine_branch || 'wine' }}
             - Version: ${{ github.event.inputs.wine_version || 'latest' }}
             - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
-            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 global fix (GstBufferMapInfo→GstMapInfo), external 1.patch/2.patch (applied with fallback)
-            - OpenCL: **disabled** (`--without-opencl`) to avoid linking errors
+            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 global fix, external patches (with fallback)
+            - OpenCL: disabled (`--without-opencl`)
+            - Build fix: `widl` built before main `make` to prevent `stdole2.tlb` error
 
             Built on ${{ github.event.repository.updated_at }}.
           files: wine-arm64-*.tar.gz

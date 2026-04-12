@@ -130,7 +130,7 @@ jobs:
           echo "Wine source cloned to $(pwd)"
 
       # ------------------------------------------------------------
-      # Apply Exact Patches from Provided Script
+      # Apply Exact Patches from Provided Script + GStreamer fix
       # ------------------------------------------------------------
       - name: 🧪 Apply full patch set
         run: |
@@ -238,6 +238,14 @@ jobs:
                       if (object->memory_properties.memoryHeaps[k].flags \& VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
                           object->memory_properties.memoryHeaps[k].size = s; \
               }' "$FILE"
+          fi
+
+          # 9. **NEW** GStreamer compatibility fix for Ubuntu 22.04 (GStreamer 1.20)
+          FILE="dlls/winegstreamer/media-converter/videoconv.c"
+          if [ -f "$FILE" ]; then
+            echo "Fixing GstBufferMapInfo -> GstMapInfo for GStreamer 1.20 compatibility..."
+            sed -i 's/GstBufferMapInfo/GstMapInfo/g' "$FILE"
+            echo "✔ videoconv.c patched"
           fi
 
           # External patches from URL
@@ -352,7 +360,7 @@ jobs:
             - Branch: ${{ github.event.inputs.wine_branch || 'wine' }}
             - Version: ${{ github.event.inputs.wine_version || 'latest' }}
             - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
-            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, external 1.patch/2.patch
+            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 fix, external 1.patch/2.patch
 
             Built on ${{ github.event.repository.updated_at }}.
           files: wine-arm64-*.tar.gz

@@ -126,64 +126,83 @@ jobs:
           git submodule update --init --recursive
 
       # ------------------------------------------------------------
-      # Apply Advanced Patches (Termux, ARM64EC, VRAM spoof, etc.)
+      # Apply Exact Patches from Chinese Script
       # ------------------------------------------------------------
-      - name: 🧪 Apply full patch system
+      - name: 🧪 Apply full patch system (exact match)
         run: |
           cd wine
 
           echo "🧪 Applying full Wine patch set..."
 
-          # Termux tmp path fix
-          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
-            -exec sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g' {} + 2>/dev/null || true
-          find server -type f \( -name "*.c" -o -name "*.h" \) \
-            -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
+          # Termux tmp path fix (exact commands)
+          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) -exec grep -l "/tmp" {} \; 2>/dev/null | xargs sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g' 2>/dev/null || true
+          find server -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
           find . -name "file.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
           find . -name "loader.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
           find . -name "server.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
+          echo "路径修复完成"
 
-          # atiadlxx InterlockedOr casting fix
+          # 1. InterlockedOr type casting fix (atiadlxx)
           FILE="dlls/atiadlxx/atiadlxx_main.c"
-          [ -f "$FILE" ] && sed -i 's/LONG dummy/long dummy/g' "$FILE" && \
-            sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
-
-          # wdscore spec cleanup
-          FILE="dlls/wdscore/wdscore.spec"
-          [ -f "$FILE" ] && sed -i '/CDynamicArray/d' "$FILE"
-
-          # ntdll virtual.c uninitialized var fix
-          FILE="dlls/ntdll/unix/virtual.c"
-          [ -f "$FILE" ] && sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' "$FILE"
-
-          # ARM64EC loader patches
-          FILE="dlls/ntdll/unix/loader.c"
-          [ -f "$FILE" ] && sed -i 's|/x86_64-windows|/aarch64-windows|g' "$FILE"
-
-          FILE="dlls/ntdll/loader.c"
           if [ -f "$FILE" ]; then
-            sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$FILE"
-            sed -i 's/ULONG buffer\[16\];/ULONG buffer\[32\];/g' "$FILE"
-          fi
-
-          # wine.inf FEX libraries
-          INF="loader/wine.inf.in"
-          if [ -f "$INF" ]; then
-            sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$INF"
-            sed -i 's|xtajit\.dll|libwow64fex.dll|g' "$INF"
-            if ! grep -q 'libarm64ecfex' "$INF"; then
-              sed -i '/^;;KnownDLLs$/a HKLM,%Control%\\Session Manager\\KnownDLLs,"libarm64ecfex",,"libarm64ecfex.dll"\nHKLM,%Control%\\Session Manager\\KnownDLLs,"libwow64fex",,"libwow64fex.dll"' "$INF"
+            if grep -q 'InterlockedOr(&dummy, 0)' "$FILE"; then
+              sed -i 's/LONG dummy/long dummy/g' "$FILE"
+              sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
+              echo "✔ InterlockedOr patched with explicit casting"
+            else
+              echo "✔ InterlockedOr already patched or not found"
             fi
           fi
 
-          # FEX YMM state flags
-          FILE="include/winnt.h"
-          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
-            sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE   (CONTEXT_ARM64 | 0x00000040)' "$FILE"
+          FILE3="dlls/wdscore/wdscore.spec"
+          if [ -f "$FILE3" ]; then
+            if grep -q '@ stub' "$FILE3"; then
+              echo "Cleaning wdscore.spec stubs..."
+              sed -i '/CDynamicArray/d' "$FILE3"
+              echo "✔ wdscore stubs cleaned"
+            else
+              echo "✔ wdscore already cleaned or not found"
+            fi
           fi
 
+          # 2. ntdll virtual.c uninitialized var fix
+          FILE="dlls/ntdll/unix/virtual.c"
+          if [ -f "$FILE" ]; then
+            if grep -q 'unsigned int vprot, sec_flags;' "$FILE"; then
+              echo "Fixing uninitialized vprot in virtual.c..."
+              sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' "$FILE"
+            fi
+          fi
+
+          FILE="dlls/ntdll/unix/loader.c"
+          if ! grep -q '/aarch64-windows' "$FILE"; then
+            echo "Patching PE directory mapping..."
+            sed -i 's|/x86_64-windows|/aarch64-windows|g' "$FILE"
+          fi
+
+          FILE="dlls/ntdll/loader.c"
+          if [ -f "$FILE" ]; then
+            if grep -q 'xtajit64\.dll' "$FILE"; then
+              echo "Replacing xtajit64.dll with libarm64ecfex.dll..."
+              sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$FILE"
+            fi
+            if grep -q 'ULONG buffer\[16\];' "$FILE"; then
+              echo "Increasing loader buffer size from 16 to 32..."
+              sed -i 's/ULONG buffer\[16\];/ULONG buffer\[32\];/g' "$FILE"
+            fi
+          fi
+
+          INF="loader/wine.inf.in"
+          if ! grep -q 'libarm64ecfex.dll' "$INF"; then
+            echo "Patching wine.inf..."
+            sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' "$INF"
+            sed -i 's/xtajit\.dll/libwow64fex.dll/g' "$INF"
+          fi
+
+          # 5. FEX YMM State in unwind.h
           FILE="dlls/ntdll/unwind.h"
           if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
+            echo "Patching unwind flags for FEX YMM state..."
             sed -i '/ctx_flags_x64_to_arm/,/}/ {
               /CONTEXT_AMD64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;/
             }' "$FILE"
@@ -192,21 +211,58 @@ jobs:
             }' "$FILE"
           fi
 
-          # Vulkan VRAM spoofing
-          FILE="dlls/winevulkan/vulkan.c"
-          if [ -f "$FILE" ] && ! grep -q 'WINE_VRAM_SIZE' "$FILE"; then
-            sed -i '/p_vkGetPhysicalDeviceMemoryProperties(host_physical_device, \&object->memory_properties);/a \
-            { \
-                const char *v = getenv("WINE_VRAM_SIZE"); \
-                uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
-                uint32_t k; \
-                for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
-                    if (object->memory_properties.memoryHeaps[k].flags \& VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
-                        object->memory_properties.memoryHeaps[k].size = s; \
-            }' "$FILE"
+          # 6. winnt.h FEX flag definitions
+          FILE="include/winnt.h"
+          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
+            echo "Patching winnt.h to match FEX diff..."
+            sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
+            sed -i 's/^#define CONTEXT_ARM64_X18.*/#define CONTEXT_ARM64_X18             (CONTEXT_ARM64 | 0x00000010)/' "$FILE"
+            if ! grep -q 'CONTEXT_ARM64_XSTATE' "$FILE"; then
+              sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE          (CONTEXT_ARM64 | 0x00000020)' "$FILE"
+            fi
+            sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE   (CONTEXT_ARM64 | 0x00000040)' "$FILE"
           fi
 
-          echo "✔ All patches applied"
+          # 8. Vulkan VRAM Faking
+          FILE="dlls/winevulkan/vulkan.c"
+          if [ -f "$FILE" ] && ! grep -q 'WINE_VRAM_SIZE' "$FILE" ; then
+            echo "Applying VRAM faking to winevulkan..."
+            sed -i '/p_vkGetPhysicalDeviceMemoryProperties(host_physical_device, \&object->memory_properties);/a \
+              { \
+                  const char *v = getenv("WINE_VRAM_SIZE"); \
+                  uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
+                  uint32_t k; \
+                  for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
+                      if (object->memory_properties.memoryHeaps[k].flags \& VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
+                          object->memory_properties.memoryHeaps[k].size = s; \
+              }' "$FILE"
+          fi
+
+          # External patches
+          export PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
+          PATCH_FILES="1.patch 2.patch"
+          echo "Applying external patches from $PATCH_BASE..."
+          for FILE in $PATCH_FILES; do
+            URL="${PATCH_BASE}/${FILE}"
+            PATCH_FILE="$FILE"
+            echo "--------------------------------------------"
+            echo "Downloading $PATCH_FILE..."
+            wget -q -O "$PATCH_FILE" "$URL"
+
+            if git apply --check "$PATCH_FILE" > /dev/null 2>&1; then
+                echo "✔ $PATCH_FILE can be applied cleanly"
+                git apply --whitespace=fix "$PATCH_FILE"
+            elif git apply --3way --check "$PATCH_FILE" > /dev/null 2>&1; then
+                echo "⚠ Applying $PATCH_FILE with 3-way merge"
+                git apply --3way --whitespace=fix "$PATCH_FILE"
+            else
+                echo "❌ $PATCH_FILE failed, generating rejects"
+                git apply --reject --whitespace=fix "$PATCH_FILE" || true
+                find . -name "*.rej"
+            fi
+          done
+          echo "--------------------------------------------"
+          echo "✔ All patch processes completed"
 
       # ------------------------------------------------------------
       # Configure and Build
@@ -284,7 +340,7 @@ jobs:
             - Branch: ${{ github.event.inputs.wine_branch || 'wine' }}
             - Version: ${{ github.event.inputs.wine_version || 'latest' }}
             - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
-            - Patches: Termux tmp, ARM64EC loader, VRAM spoof, etc.
+            - Patches: Full Termux + ARM64EC + VRAM spoof + external patches
 
             Built on ${{ github.event.repository.updated_at}}.
           files: wine-arm64-*.tar.gz

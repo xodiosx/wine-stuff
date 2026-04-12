@@ -39,6 +39,7 @@ jobs:
           sudo apt update
           sudo apt install -y --no-install-recommends \
             build-essential git wget xz-utils ccache \
+            autoconf automake libtool \
             flex bison pkg-config gettext \
             mingw-w64 \
             libx11-dev libfreetype6-dev libxcursor-dev \
@@ -92,7 +93,7 @@ jobs:
         run: echo "/opt/llvm-mingw/bin" >> $GITHUB_PATH
 
       # ------------------------------------------------------------
-      # Clone Wine Source (Fixed directory handling)
+      # Clone Wine Source
       # ------------------------------------------------------------
       - name: 📥 Clone Wine source
         run: |
@@ -264,6 +265,19 @@ jobs:
           done
           echo "--------------------------------------------"
           echo "✔ All patch processes completed"
+
+      # ------------------------------------------------------------
+      # Generate configure script
+      # ------------------------------------------------------------
+      - name: 🔧 Generate configure script
+        run: |
+          cd wine
+          if [ ! -f "configure" ]; then
+            echo "Running autogen.sh to generate configure..."
+            ./autogen.sh
+          else
+            echo "configure already exists."
+          fi
 
       # ------------------------------------------------------------
       # Configure and Build

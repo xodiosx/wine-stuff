@@ -130,7 +130,7 @@ jobs:
           echo "Wine source cloned to $(pwd)"
 
       # ------------------------------------------------------------
-      # Apply Exact Patches from Provided Script + GStreamer fix
+      # Apply Exact Patches from Provided Script + GStreamer fixes
       # ------------------------------------------------------------
       - name: 🧪 Apply full patch set
         run: |
@@ -360,7 +360,7 @@ jobs:
             - Branch: ${{ github.event.inputs.wine_branch || 'wine' }}
             - Version: ${{ github.event.inputs.wine_version || 'latest' }}
             - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
-            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 fix, external 1.patch/2.patch
+            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 fix (videoconv.c), external 1.patch/2.patch
 
             Built on ${{ github.event.repository.updated_at }}.
           files: wine-arm64-*.tar.gz

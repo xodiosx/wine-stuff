@@ -1,196 +1,292 @@
-name: Build & Deploy Engine
+name: Build Wine ARM64EC (Native ARM64 + WOW64)
 
 on:
- workflow_dispatch:
+  workflow_dispatch:
+    inputs:
+      wine_branch:
+        description: 'Wine source branch'
+        required: false
+        default: 'wine'
+        type: choice
+        options:
+          - wine
+          - staging
+          - proton
+          - arm64ec
+      wine_version:
+        description: 'Wine version (e.g., wine-9.22, latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+env:
+  LLVMMINGW_DATE: 20250305
+  LLVMMINGW_NAME: llvm-mingw-20250305-ucrt-ubuntu-20.04-aarch64
+  CCACHE_DIR: /home/runner/.ccache
+  CCACHE_MAXSIZE: 2G
+
+permissions:
+  contents: write
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
-    continue-on-error: true
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            targetos: linux
-            targetarch: amd64
-
-          - os: ubuntu-22.04
-            targetos: linux
-            targetarch: i386
-
-          - os: ubuntu-22.04-arm
-            targetos: linux
-            targetarch: arm64
-
-          - os: ubuntu-22.04-arm
-            targetos: linux
-            targetarch: armhf
-
-          - os: ubuntu-24.04
-            targetos: linux
-            targetarch: riscv64
-            cross: true
-
-          - os: ubuntu-22.04
-            targetos: linux
-            targetarch: ppc64el
-            cross: true
-
-          - os: ubuntu-latest
-            targetos: android
-            targetarch: multiarch
-
-          - os: ubuntu-latest
-            targetos: nswitch
-            targetarch: arm64
-
-          - os: ubuntu-latest
-            targetos: psvita
-            targetarch: armv7hf
-
-          - os: windows-latest
-            targetos: win32
-            targetarch: amd64
-
-          - os: windows-2022
-            targetos: win32
-            targetarch: i386
-
-          - os: macos-14
-            targetos: apple
-            targetarch: arm64
-
-          - os: macos-latest
-            targetos: ios
-            targetarch: arm64
-
-          - os: macos-15-intel
-            targetos: apple
-            targetarch: amd64
-
-    env:
-      SDL_VERSION: 2.32.10
-      FFMPEG_VERSION: 8.1
-      GH_CPU_ARCH: ${{ matrix.targetarch }}
-      GH_CPU_OS: ${{ matrix.targetos }}
-      GH_CROSSCOMPILING: ${{ matrix.cross }}
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      # -------------------------
-      # INSTALL DEPS
-      # -------------------------
-      - name: Install dependencies
-        run: bash scripts/gha/deps_${{ matrix.targetos }}.sh
-
-      # -------------------------
-      # APPLY PATCHES (FIXED)
-      # -------------------------
-      - name: Apply Wine patches
-        if: matrix.targetos == 'linux'
+      - name: 📦 Install native build dependencies
         run: |
-          set -e
+          sudo apt update
+          sudo apt install -y --no-install-recommends \
+            build-essential git wget xz-utils ccache \
+            flex bison pkg-config gettext \
+            mingw-w64 \
+            libx11-dev libfreetype6-dev libxcursor-dev \
+            libxi-dev libxrandr-dev libxinerama-dev \
+            libxxf86vm-dev libgl1-mesa-dev libosmesa6-dev \
+            libpulse-dev libdbus-1-dev libfontconfig1-dev \
+            libxcomposite-dev libxrender-dev libxext-dev \
+            libudev-dev libvulkan-dev \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libunwind-dev libgnutls28-dev libkrb5-dev \
+            ocl-icd-opencl-dev
 
-          cd wine || exit 1
+      - name: 💾 Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
 
-          echo "🧪 Applying patches..."
+      - name: ⚙️ Configure ccache
+        run: |
+          ccache --set-config=cache_dir=${{ env.CCACHE_DIR }}
+          ccache --set-config=max_size=${{ env.CCACHE_MAXSIZE }}
+          ccache -z
 
+      # ------------------------------------------------------------
+      # LLVM MinGW Toolchain (cached)
+      # ------------------------------------------------------------
+      - name: 💾 Cache llvm-mingw
+        id: cache-llvm
+        uses: actions/cache@v4
+        with:
+          path: /opt/llvm-mingw
+          key: llvm-mingw-${{ env.LLVMMINGW_NAME }}
+
+      - name: ⬇️ Install LLVM MinGW
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /opt
+          cd /opt
+          sudo wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVMMINGW_DATE }}/${{ env.LLVMMINGW_NAME }}.tar.xz
+          sudo mkdir -p llvm-extract
+          sudo tar -xf ${{ env.LLVMMINGW_NAME }}.tar.xz -C llvm-extract
+          EXTRACTED_DIR=$(sudo find llvm-extract -maxdepth 1 -type d | tail -n 1)
+          sudo mv "$EXTRACTED_DIR" /opt/llvm-mingw
+          sudo rm -rf llvm-extract ${{ env.LLVMMINGW_NAME }}.tar.xz
+
+      - name: 🔧 Add llvm-mingw to PATH
+        run: echo "/opt/llvm-mingw/bin" >> $GITHUB_PATH
+
+      # ------------------------------------------------------------
+      # Clone Wine Source
+      # ------------------------------------------------------------
+      - name: 📥 Clone Wine source
+        run: |
+          WINE_BRANCH="${{ github.event.inputs.wine_branch || 'wine' }}"
+          WINE_VERSION="${{ github.event.inputs.wine_version || 'latest' }}"
+
+          case "$WINE_BRANCH" in
+            arm64ec)
+              git clone -b bleeding-edge https://github.com/ziad9267/wine.git wine
+              ;;
+            staging)
+              git clone https://github.com/wine-mirror/wine.git wine
+              cd wine
+              git fetch --tags
+              if [ "$WINE_VERSION" != "latest" ]; then
+                git checkout "wine-$WINE_VERSION"
+              fi
+              ;;
+            proton)
+              git clone -b proton_10.0 https://github.com/ValveSoftware/wine.git wine
+              ;;
+            *)
+              git clone https://gitlab.winehq.org/wine/wine.git wine
+              cd wine
+              if [ "$WINE_VERSION" != "latest" ]; then
+                git checkout "wine-$WINE_VERSION"
+              fi
+              ;;
+          esac
+          cd wine
           git submodule update --init --recursive
 
-          MATCHES=$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
-            -exec grep -l "/tmp" {} \; 2>/dev/null)
+      # ------------------------------------------------------------
+      # Apply Advanced Patches (Termux, ARM64EC, VRAM spoof, etc.)
+      # ------------------------------------------------------------
+      - name: 🧪 Apply full patch system
+        run: |
+          cd wine
 
-          if [ -n "$MATCHES" ]; then
-            echo "$MATCHES" | xargs sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g'
-          else
-            echo "✔ No /tmp matches found"
-          fi
+          echo "🧪 Applying full Wine patch set..."
 
+          # Termux tmp path fix
+          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
+            -exec sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g' {} + 2>/dev/null || true
           find server -type f \( -name "*.c" -o -name "*.h" \) \
             -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
-
           find . -name "file.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
           find . -name "loader.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
           find . -name "server.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
 
-          echo "✔ 路径修复完成"
-
+          # atiadlxx InterlockedOr casting fix
           FILE="dlls/atiadlxx/atiadlxx_main.c"
-          [ -f "$FILE" ] && sed -i 's/LONG dummy/long dummy/g' "$FILE"
+          [ -f "$FILE" ] && sed -i 's/LONG dummy/long dummy/g' "$FILE" && \
+            sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
 
+          # wdscore spec cleanup
           FILE="dlls/wdscore/wdscore.spec"
           [ -f "$FILE" ] && sed -i '/CDynamicArray/d' "$FILE"
 
+          # ntdll virtual.c uninitialized var fix
           FILE="dlls/ntdll/unix/virtual.c"
           [ -f "$FILE" ] && sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' "$FILE"
 
+          # ARM64EC loader patches
           FILE="dlls/ntdll/unix/loader.c"
           [ -f "$FILE" ] && sed -i 's|/x86_64-windows|/aarch64-windows|g' "$FILE"
 
           FILE="dlls/ntdll/loader.c"
-          [ -f "$FILE" ] && sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$FILE"
-
-          INF="loader/wine.inf.in"
-          [ -f "$INF" ] && sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' "$INF"
-
-          FILE="include/winnt.h"
-          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
-            sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE (CONTEXT_ARM64 | 0x00000020)' "$FILE"
-            sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE (CONTEXT_ARM64 | 0x00000040)' "$FILE"
+          if [ -f "$FILE" ]; then
+            sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$FILE"
+            sed -i 's/ULONG buffer\[16\];/ULONG buffer\[32\];/g' "$FILE"
           fi
 
-          PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
-          for P in 1.patch 2.patch; do
-            wget -q -O "$P" "$PATCH_BASE/$P"
-
-            if git apply --check "$P" > /dev/null 2>&1; then
-              git apply --whitespace=fix "$P"
-            elif git apply --3way --check "$P" > /dev/null 2>&1; then
-              git apply --3way --whitespace=fix "$P"
-            else
-              git apply --reject --whitespace=fix "$P" || true
+          # wine.inf FEX libraries
+          INF="loader/wine.inf.in"
+          if [ -f "$INF" ]; then
+            sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$INF"
+            sed -i 's|xtajit\.dll|libwow64fex.dll|g' "$INF"
+            if ! grep -q 'libarm64ecfex' "$INF"; then
+              sed -i '/^;;KnownDLLs$/a HKLM,%Control%\\Session Manager\\KnownDLLs,"libarm64ecfex",,"libarm64ecfex.dll"\nHKLM,%Control%\\Session Manager\\KnownDLLs,"libwow64fex",,"libwow64fex.dll"' "$INF"
             fi
-          done
+          fi
 
-          echo "✔ All patch processes completed"
+          # FEX YMM state flags
+          FILE="include/winnt.h"
+          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
+            sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE   (CONTEXT_ARM64 | 0x00000040)' "$FILE"
+          fi
 
-      # -------------------------
-      # BUILD
-      # -------------------------
-      - name: Build engine
-        env:
-          FWGS_PFX_PASSWORD: ${{ secrets.FWGS_PFX_PASSWORD }}
-        run: bash scripts/gha/build_${{ matrix.targetos }}.sh
+          FILE="dlls/ntdll/unwind.h"
+          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
+            sed -i '/ctx_flags_x64_to_arm/,/}/ {
+              /CONTEXT_AMD64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;/
+            }' "$FILE"
+            sed -i '/ctx_flags_arm_to_x64/,/}/ {
+              /CONTEXT_ARM64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_ARM64_FEX_YMMSTATE) ret |= CONTEXT_AMD64_XSTATE;/
+            }' "$FILE"
+          fi
 
-      # -------------------------
-      # ARTIFACTS
-      # -------------------------
-      - name: Upload artifacts
+          # Vulkan VRAM spoofing
+          FILE="dlls/winevulkan/vulkan.c"
+          if [ -f "$FILE" ] && ! grep -q 'WINE_VRAM_SIZE' "$FILE"; then
+            sed -i '/p_vkGetPhysicalDeviceMemoryProperties(host_physical_device, \&object->memory_properties);/a \
+            { \
+                const char *v = getenv("WINE_VRAM_SIZE"); \
+                uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
+                uint32_t k; \
+                for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
+                    if (object->memory_properties.memoryHeaps[k].flags \& VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
+                        object->memory_properties.memoryHeaps[k].size = s; \
+            }' "$FILE"
+          fi
+
+          echo "✔ All patches applied"
+
+      # ------------------------------------------------------------
+      # Configure and Build
+      # ------------------------------------------------------------
+      - name: 🔨 Build Wine
+        run: |
+          export PATH="/opt/llvm-mingw/bin:$PATH"
+          export CC="ccache clang"
+          export CXX="ccache clang++"
+
+          cd wine
+          mkdir -p build && cd build
+
+          # Configure for ARM64 with WOW64 support and PE toolchain
+          ../configure \
+            --enable-win64 \
+            --enable-archs=i386,x86_64,arm64ec \
+            --with-mingw=clang \
+            --disable-tests \
+            --without-capi \
+            --without-dbus \
+            --without-oss \
+            --without-cups \
+            --without-gphoto \
+            --without-sane \
+            --without-v4l2 \
+            --without-udev \
+            --without-pcap \
+            --without-pcsclite
+
+          make -j$(nproc)
+
+          # Show ccache stats
+          ccache -s
+
+      # ------------------------------------------------------------
+      # Package
+      # ------------------------------------------------------------
+      - name: 📦 Create install package
+        run: |
+          cd wine/build
+          make install DESTDIR=/tmp/wine-install
+
+          # Package with necessary libs
+          mkdir -p /tmp/wine-package
+          cp -r /tmp/wine-install/* /tmp/wine-package/
+
+          # Ensure nls files exist (fallback)
+          if [ ! -f /tmp/wine-package/usr/local/share/wine/nls/locale.nls ]; then
+            mkdir -p /tmp/wine-package/usr/local/share/wine/nls
+            cp ../nls/*.nls /tmp/wine-package/usr/local/share/wine/nls/ 2>/dev/null || true
+          fi
+
+          cd /tmp/wine-package
+          tar -czf $GITHUB_WORKSPACE/wine-arm64-${WINE_BRANCH:-wine}.tar.gz .
+
+      - name: ⬆️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: artifact-${{ matrix.targetos }}-${{ matrix.targetarch }}
-          path: artifacts/*
+          name: wine-arm64-native
+          path: wine-arm64-*.tar.gz
 
-  # -------------------------
-  # RELEASE
-  # -------------------------
-  release:
-    name: Upload releases
-    runs-on: ubuntu-latest
-    needs: [build]
-    if: github.event_name == 'push'
+      # ------------------------------------------------------------
+      # Create GitHub Release (on dispatch only)
+      # ------------------------------------------------------------
+      - name: 📤 Create Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: wine-arm64-${{ github.run_number }}
+          name: Wine ARM64 Build ${{ github.run_number }}
+          body: |
+            **Wine ARM64 Native Build**
+            - Runner: `ubuntu-22.04-arm`
+            - Branch: ${{ github.event.inputs.wine_branch || 'wine' }}
+            - Version: ${{ github.event.inputs.wine_version || 'latest' }}
+            - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
+            - Patches: Termux tmp, ARM64EC loader, VRAM spoof, etc.
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Publish release
+            Built on ${{ github.event.repository.updated_at}}.
+          files: wine-arm64-*.tar.gz
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash scripts/gha/make_release.sh "Xash3D FWGS" "${{ github.ref_name }}"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

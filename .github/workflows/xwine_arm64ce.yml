@@ -6,7 +6,7 @@ on:
       wine_branch:
         description: 'Wine source branch'
         required: false
-        default: 'arm64ec'
+        default: 'wine'
         type: choice
         options:
           - wine
@@ -136,7 +136,7 @@ jobs:
         run: |
           cd wine
 
-          # Termux tmp path fix (safe for all architectures)
+          # Termux tmp path fix
           find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) -exec grep -l "/tmp" {} \; 2>/dev/null | xargs sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g' 2>/dev/null || true
           find server -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
           find . -name "file.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
@@ -156,7 +156,6 @@ jobs:
             fi
           fi
 
-          # wdscore spec cleanup
           FILE3="dlls/wdscore/wdscore.spec"
           if [ -f "$FILE3" ]; then
             if grep -q '@ stub' "$FILE3"; then
@@ -177,14 +176,12 @@ jobs:
             fi
           fi
 
-          # PE directory mapping for ARM64
           FILE="dlls/ntdll/unix/loader.c"
           if ! grep -q '/aarch64-windows' "$FILE"; then
             echo "Patching PE directory mapping..."
             sed -i 's|/x86_64-windows|/aarch64-windows|g' "$FILE"
           fi
 
-          # xtajit64 -> libarm64ecfex replacement
           FILE="dlls/ntdll/loader.c"
           if [ -f "$FILE" ]; then
             if grep -q 'xtajit64\.dll' "$FILE"; then
@@ -197,7 +194,6 @@ jobs:
             fi
           fi
 
-          # wine.inf adjustments
           INF="loader/wine.inf.in"
           if ! grep -q 'libarm64ecfex.dll' "$INF"; then
             echo "Patching wine.inf..."
@@ -249,7 +245,7 @@ jobs:
           find dlls/winegstreamer -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/GstBufferMapInfo/GstMapInfo/g' {} +
           echo "✔ GStreamer compatibility patch applied"
 
-          # External patches from URL (these may be x86_64 specific; they will be skipped if not applicable)
+          # External patches from URL
           export PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
           PATCH_FILES="1.patch 2.patch"
           echo "Applying external patches from $PATCH_BASE..."
@@ -305,6 +301,7 @@ jobs:
             --enable-archs=i386,x86_64,arm64ec \
             --with-mingw=clang \
             --disable-tests \
+            --without-opencl \
             --without-capi \
             --without-dbus \
             --without-oss \
@@ -368,7 +365,8 @@ jobs:
             - Branch: ${{ github.event.inputs.wine_branch || 'wine' }}
             - Version: ${{ github.event.inputs.wine_version || 'latest' }}
             - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
-            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, **GStreamer 1.20 global fix (GstBufferMapInfo→GstMapInfo)**, external 1.patch/2.patch (applied with fallback)
+            - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 global fix (GstBufferMapInfo→GstMapInfo), external 1.patch/2.patch (applied with fallback)
+            - OpenCL: **disabled** (`--without-opencl`) to avoid linking errors
 
             Built on ${{ github.event.repository.updated_at }}.
           files: wine-arm64-*.tar.gz

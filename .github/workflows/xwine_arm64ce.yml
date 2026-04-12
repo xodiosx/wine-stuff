@@ -6,7 +6,7 @@ on:
       wine_branch:
         description: 'Wine source branch'
         required: false
-        default: 'wine'
+        default: 'arm64ec'
         type: choice
         options:
           - wine

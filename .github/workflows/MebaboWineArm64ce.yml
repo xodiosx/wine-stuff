@@ -1,21 +1,23 @@
-name: Build zWine ARM64 (Termux/Android)
+name: Wine ARM64 (Termux Android Fixed)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Install base dependencies
+      - name: Checkout Wine source
         run: |
-          sudo dpkg --add-architecture arm64
+          git clone https://gitlab.winehq.org/wine/wine.git
+          cd wine
+
+      - name: Install dependencies (FIXED)
+        run: |
           sudo apt update
 
+          # ❌ Removed ALL i386 (critical fix)
           sudo apt install -y \
             build-essential \
             git \
@@ -25,8 +27,9 @@ jobs:
             flex \
             bison \
             pkg-config \
-            python3 \
-            python3-pip \
+            gettext \
+            icoutils \
+            fontforge-nox \
             libx11-dev \
             libxext-dev \
             libxrandr-dev \
@@ -43,15 +46,14 @@ jobs:
             libwayland-dev \
             libpulse-dev \
             libdbus-1-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
             libgnutls28-dev \
             libasound2-dev \
             libudev-dev \
             llvm \
             clang \
-            lld \
-            mingw-w64
+            lld
 
       - name: Install LLVM MinGW (ARM64 Windows toolchain)
         run: |
@@ -60,49 +62,89 @@ jobs:
           sudo tar -xf llvm-mingw.tar.xz
           sudo mv llvm-mingw-* llvm-mingw
 
-      - name: Export toolchain
+      - name: Setup PATH
         run: |
           echo "PATH=/opt/llvm-mingw/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Clone Wine source
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+
+      - name: Prepare Termux sysroot
         run: |
-          git clone https://gitlab.winehq.org/wine/wine.git
+          mkdir termux
+          cd termux
+          wget https://github.com/ziad9267/termux-on-gha/releases/download/test/termuxfs.tar
+          tar xf termuxfs.tar
+          sudo mv data /data
+          sudo chown -R $(whoami):$(whoami) /data
+
+      - name: Build Wine tools (FIXED PATH)
+        run: |
+          cd wine
+          ./configure --without-x --without-wayland --without-vulkan
+
+          make -j$(nproc) __tooldeps__ nls/all
+
+          mkdir wine-tools
+          cp -r tools wine-tools/
+
+      - name: Configure Wine (FIXED)
+        run: |
           cd wine
 
-      - name: Apply patches (optional)
-        run: |
-          cd wine
-          if [ -d "${{ github.workspace }}/patches" ]; then
-            for p in ${{ github.workspace }}/patches/*.patch; do
-              [ -f "$p" ] && patch -p1 < "$p"
-            done
-          fi
+          export TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="/opt/llvm-mingw/bin:$PATH"
 
-      - name: Configure Wine ARM64
-        run: |
-          cd wine
+          export CC="$TOOLCHAIN/clang --target=aarch64-linux-android28"
+          export CXX="$TOOLCHAIN/clang++ --target=aarch64-linux-android28"
+
+          export deps="/data/data/com.termux/files/usr"
+
+          export PKG_CONFIG_PATH=$deps/lib/pkgconfig:$deps/share/pkgconfig
+          export CPPFLAGS="-I$deps/include"
+          export LDFLAGS="-L$deps/lib -landroid-shmem -landroid-spawn"
+
           mkdir build
           cd build
 
           ../configure \
-            --host=aarch64-linux-gnu \
-            --with-mingw \
-            CC=clang \
-            CXX=clang++ \
-            LD=lld
+            --host=aarch64-linux-android \
+            --with-mingw=clang \
+            --enable-win64 \
+            --disable-win16 \
+            --disable-tests \
+            --without-x \
+            --without-wayland \
+            --without-alsa \
+            --without-cups \
+            --without-dbus \
+            --without-gphoto \
+            --without-krb5 \
+            --without-oss \
+            --without-pcap \
+            --without-sane \
+            --without-udev \
+            --without-usb \
+            --without-v4l2 \
+            --enable-wineandroid_drv=no
 
       - name: Build Wine
         run: |
           cd wine/build
           make -j$(nproc)
 
-      - name: Package build
+      - name: Install to package
         run: |
           cd wine/build
-          tar -czf wine-arm64.tar.gz *
+          make install DESTDIR=wine-out
 
-      - name: Upload artifact
+      - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: wine-arm64
-          path: wine/build/wine-arm64.tar.gz
+          name: wine-arm64-termux
+          path: wine/build/wine-out

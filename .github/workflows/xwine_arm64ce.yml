@@ -285,7 +285,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------
-      # Configure and Build (with widl pre‑build to avoid stdole2.tlb error)
+      # Configure and Build (using __tooldeps__ to avoid stdole2.tlb error)
       # ------------------------------------------------------------
       - name: 🔨 Build Wine
         run: |
@@ -313,11 +313,11 @@ jobs:
             --without-pcap \
             --without-pcsclite
 
-          # Build the IDL compiler first to avoid stdole2.tlb errors in parallel builds
-          echo "Building widl (IDL compiler) first..."
-          make -j$(nproc) tools/widl
+          # Build all necessary tools first (widl, nls, etc.) – prevents stdole2.tlb race
+          echo "Building Wine tools (__tooldeps__ and nls)..."
+          make -j$(nproc) __tooldeps__ nls/all
 
-          # Now build everything (including stdole2.tlb generation)
+          # Now build everything (including typelibs)
           set -o pipefail
           make -j$(nproc) 2>&1 | tee build.log | grep -E --line-buffered "error:|Error:|undefined reference|multiple definition|ld returned|make\[|FAILED:"
 
@@ -372,7 +372,7 @@ jobs:
             - LLVM MinGW: ${{ env.LLVMMINGW_NAME }}
             - Patches: Full Termux tmp, ARM64EC loader, VRAM spoof, FEX flags, GStreamer 1.20 global fix, external patches (with fallback)
             - OpenCL: disabled (`--without-opencl`)
-            - Build fix: `widl` built before main `make` to prevent `stdole2.tlb` error
+            - Build fix: `make __tooldeps__ nls/all` before main build to prevent `stdole2.tlb` error
 
             Built on ${{ github.event.repository.updated_at }}.
           files: wine-arm64-*.tar.gz

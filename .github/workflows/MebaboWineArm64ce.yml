@@ -1,588 +1,168 @@
-name: Build Wine ARM64 WOW64
+name: Build zWine ARM64EC (Termux Android)
 
 on:
-  schedule:
-    - cron: '0 2 5,20 * *'
   workflow_dispatch:
-    inputs:
-      wine_branch:
-        description: 'Wine 分支'
-        required: false
-        default: 'proton'
-        type: choice
-        options:
-        - proton
-        - staging
-        - winearm64ec
-      wine_version:
-        description: 'Wine 版本 (例如 9.22，或 latest)'
-        required: false
-        default: 'latest'
-        type: string
-
-env:
-  LLVMMINGW_DATE: 20251202
-  LLVMMINGW_NAME: llvm-mingw-20251202-ucrt-ubuntu-22.04-x86_64
-  WINE64_DIR: /opt/wine64
-  WINE_SOURCE_DIR: /opt/wine-src
-  DEBIAN_FRONTEND: noninteractive
-
-permissions:
-  contents: write
 
 jobs:
-  build-wine-wow64:
+  build:
     runs-on: ubuntu-latest
-    container:
-      image: debian:12
-      options: --user root
     timeout-minutes: 180
 
     steps:
-      - name: 安装基础工具
+# ------------------------------------------------------------
+# 1. Clone Wine (ARM64EC repo)
+# ------------------------------------------------------------
+      - name: 📥 Clone Wine ARM64EC
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            ca-certificates wget git curl gnupg sudo xz-utils g++ file
+          git clone -b bleeding-edge https://github.com/ziad9267/wine.git wine
+          cd wine
+          git submodule update --init --recursive
 
-      - uses: actions/checkout@v4
-
-      # ------------------------------------------------------------
-      # 1. 配置 APT 源（支持 amd64 和 arm64）
-      # ------------------------------------------------------------
-      - name: APT
+# ------------------------------------------------------------
+# 2. Install deps (host tools)
+# ------------------------------------------------------------
+      - name: 📦 Install dependencies
         run: |
-          echo "🧹 Freeing disk space..."
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          df -h
+          sudo dpkg --add-architecture i386
+          sudo apt update
+          sudo apt install -y \
+            build-essential git wget xz-utils \
+            flex bison pkg-config gettext \
+            libx11-dev:i386 libfreetype6-dev:i386 \
+            libxcursor-dev:i386 libxi-dev:i386 \
+            libxrandr-dev:i386 libxinerama-dev:i386 \
+            libxxf86vm-dev:i386 libgl1-mesa-dev:i386 \
+            libosmesa6-dev:i386 libpulse-dev:i386 \
+            libdbus-1-dev:i386 libfontconfig1-dev:i386
 
-          echo "📦 Configuring APT sources..."
-          if [ -f /etc/apt/sources.list ]; then
-            cp /etc/apt/sources.list /etc/apt/sources.list.bak
-          else
-            echo "deb http://deb.debian.org/debian bookworm main contrib non-free" > /etc/apt/sources.list
-            echo "deb http://deb.debian.org/debian bookworm-updates main contrib non-free" >> /etc/apt/sources.list
-            echo "deb http://security.debian.org/debian-security bookworm-security main contrib non-free" >> /etc/apt/sources.list
-          fi
-
-          grep -v '^#' /etc/apt/sources.list | sed 's/^deb /deb [arch=amd64] /g' > /tmp/amd64.list
-          sed -e 's/\[arch=amd64\]/[arch=arm64]/g' /tmp/amd64.list > /tmp/arm64.list
-          cat /tmp/amd64.list /tmp/arm64.list > /etc/apt/sources.list
-
-          dpkg --add-architecture arm64
-          apt-get update
-          apt-get install -y --no-install-recommends hello:arm64 || { echo "arm64 repo test failed"; exit 1; }
-
-      - name: Dockerfile
+# ------------------------------------------------------------
+# 3. Setup Termux sysroot
+# ------------------------------------------------------------
+      - name: 📱 Setup Termux sysroot
         run: |
-          apt-get update && apt-get install -y --no-install-recommends \
-            build-essential \
-            git make cmake ninja-build autoconf automake \
-            libtool pkg-config gettext flex bison nasm \
-            python3 python3-setuptools ca-certificates wget \
-            curl xz-utils file \
-            clang llvm lld binutils-aarch64-linux-gnu \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross \
-            mingw-w64 \
-            libglib2.0-dev libfreetype6-dev libltdl-dev libxcb1-dev \
-            libx11-dev libvulkan-dev librsvg2-bin \
-            libx11-dev:arm64 libxext-dev:arm64 libxcursor-dev:arm64 \
-            libxi-dev:arm64 libxrandr-dev:arm64 libxrender-dev:arm64 \
-            libxfixes-dev:arm64 libxcomposite-dev:arm64 libxinerama-dev:arm64 \
-            libxxf86vm-dev:arm64 libxshmfence-dev:arm64 libwayland-dev:arm64 \
-            libgl-dev:arm64 libvulkan-dev:arm64 libepoxy-dev:arm64 \
-            libsdl2-dev:arm64 libfontconfig1-dev:arm64 libfreetype6-dev:arm64 \
-            libpulse-dev:arm64 libgstreamer1.0-dev:arm64 libgstreamer-plugins-base1.0-dev:arm64 \
-            libgstreamer-plugins-bad1.0-dev:arm64 libudev-dev:arm64 libusb-1.0-0-dev:arm64 \
-            libv4l-dev:arm64 libsane-dev:arm64 libcups2-dev:arm64 \
-            libdbus-1-dev:arm64 libkrb5-dev:arm64 libgnutls28-dev:arm64 \
-            libunwind-dev:arm64 libxkbcommon-dev:arm64 libxkbregistry-dev:arm64 \
-            ocl-icd-opencl-dev:arm64 libglib2.0-dev:arm64 libltdl-dev:arm64 \
-            libxcb1-dev:arm64 \
-            dpkg-dev fakeroot debhelper dh-make screen nano \
-            less
+          mkdir -p imagefs
+          cd imagefs
+          wget -q https://github.com/ziad9267/termux-on-gha/releases/download/test/termuxfs.tar
+          tar xf termuxfs.tar
+          rm termuxfs.tar
+          sudo mv ./data /
+          sudo chown -R $(whoami):$(whoami) /data
 
-      # ------------------------------------------------------------
-      # 3. 安装 llvm-mingw 交叉编译工具链
-      # ------------------------------------------------------------
-      - name: llvm-mingw
+# ------------------------------------------------------------
+# 4. Install LLVM MinGW (for PE)
+# ------------------------------------------------------------
+      - name: 🧰 Install LLVM MinGW
         run: |
-          mkdir -p /opt
-          cd /opt
-          wget https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVMMINGW_DATE }}/${{ env.LLVMMINGW_NAME }}.tar.xz
-          tar -xJf ${{ env.LLVMMINGW_NAME }}.tar.xz
-          rm ${{ env.LLVMMINGW_NAME }}.tar.xz
-          echo "/opt/${{ env.LLVMMINGW_NAME }}/bin" >> $GITHUB_PATH
+          wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/20250305/llvm-mingw-20250305-ucrt-ubuntu-20.04-x86_64.tar.xz
+          tar -xf llvm-mingw-*.tar.xz
+          sudo mv llvm-mingw-* /opt/llvm-mingw
 
-      - name: locales
+# ------------------------------------------------------------
+# 5. Setup Android NDK
+# ------------------------------------------------------------
+      - name: 🤖 Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+
+# ------------------------------------------------------------
+# 6. Build Wine TOOLS (CRITICAL FIX)
+# ------------------------------------------------------------
+      - name: 🔧 Build Wine tools
         run: |
-          apt-get install -y locales
-          sed -i '/ko_KR.UTF-8/s/^# //g' /etc/locale.gen
-          locale-gen
-          echo "LANG=ko_KR.UTF-8" >> $GITHUB_ENV
-          echo "LC_ALL=ko_KR.UTF-8" >> $GITHUB_ENV
-          echo "LANGUAGE=ko_KR:ko" >> $GITHUB_ENV
- 
-      - name: Wine
-        run: |
-          set -e
-          WINE_BRANCH="${{ github.event.inputs.wine_branch || 'staging' }}"
-          WINE_VERSION="${{ github.event.inputs.wine_version || 'latest' }}"
+          cd wine
+          ./autogen.sh
 
-          mkdir -p ${{ env.WINE_SOURCE_DIR }}
-          cd ${{ env.WINE_SOURCE_DIR }}
+          mkdir tools-build
+          mkdir wine-tools
 
-          case "$WINE_BRANCH" in
-            winearm64ec)
-              echo "Processing protonarm64ec branch"
-
-              git clone -b "bleeding-edge" https://github.com/ziad9267/wine.git source
-              cd source
-              git config advice.detachedHead false
-              if [ "$WINE_VERSION" != "latest" ]; then
-                git checkout "$WINE_VERSION"
-              fi
-              WINE_VERSION_ACTUAL=$(git describe --tags --abbrev=0 2>/dev/null || echo "$WINE_VERSION")
-              ;;
-            staging)
-              echo " Staging "
-              git clone https://github.com/wine-mirror/wine.git source
-              cd source
-              git config advice.detachedHead false
-              if [ "$WINE_VERSION" != "latest" ]; then
-                git checkout "$WINE_VERSION"
-              fi
-              WINE_VERSION_ACTUAL=$(git describe --tags --abbrev=0 2>/dev/null || echo "$WINE_VERSION")
-              ;;
-            proton)
-              echo "Processing Proton branch"
-
-              PROTON_BRANCH="${{ github.event.inputs.proton_branch || 'proton_10.0' }}"
-              PROTON_COMMIT="${{ github.event.inputs.proton_commit || '' }}"
-
-              git clone -b "$PROTON_BRANCH" https://github.com/ValveSoftware/wine.git source
-              cd source
-              git config advice.detachedHead false
-              if [ "$WINE_VERSION" != "latest" ]; then
-                git checkout "$WINE_VERSION"
-              fi
-              WINE_VERSION_ACTUAL=$(git describe --tags --abbrev=0 2>/dev/null || echo "$WINE_VERSION")
-              ;;
-          esac
-
-          COMMIT_HASH=$(git rev-parse --short HEAD)
-          BUILD_NAME="wine-${WINE_VERSION_ACTUAL}-${COMMIT_HASH}-${WINE_BRANCH}-arm64-wow64"
-          echo "BUILD_NAME=$BUILD_NAME" >> $GITHUB_ENV
-          echo "WINE_VERSION_ACTUAL=$WINE_VERSION_ACTUAL" >> $GITHUB_ENV
-          echo "源码准备完成，构建名称: $BUILD_NAME"
-
-      - name: configure
-        run: |
-          set -e
-          mkdir -p ${{ env.WINE64_DIR }}
-          cp -r ${{ env.WINE_SOURCE_DIR }}/source ${{ env.WINE64_DIR }}/source
-          cd ${{ env.WINE64_DIR }}/source
-          if [ ! -f "configure" ]; then
-            ./autogen.sh
-          fi
-
-      - name: native wine64 NLS
-        run: |
-          cd ${{ env.WINE64_DIR }}
-          mkdir -p amd64
-          cd amd64
-          ../source/configure \
-            --enable-win64 \
-            --disable-tests \
-            --without-x \
-            --without-vulkan \
-            --without-gstreamer \
-            --without-wayland
-          make __tooldeps__ -j$(nproc) > /dev/null
-          echo "构建 NLS 目录..."
-          make -C nls
-          # 备份整个 nls 目录（跟随符号链接）
-          mkdir -p /opt/nls-backup
-          cp -aL nls/. /opt/nls-backup/
-          echo "nls 目录已完整备份到 /opt/nls-backup"
-          ls -la /opt/nls-backup/
-
-      - name: 复制构建目录并验证 NLS（带恢复机制）
-        run: |
-          set -e
-          mkdir -p /opt/wine64-native
-          # 检查源文件，若不存在则从备份恢复（备份包含所有 nls 文件）
-          if [ ! -f ${{ env.WINE64_DIR }}/amd64/nls/locale.nls ] && [ ! -L ${{ env.WINE64_DIR }}/amd64/nls/locale.nls ]; then
-            echo "警告: 源目录中 nls/locale.nls 不存在，尝试从备份恢复"
-            if [ -d /opt/nls-backup ]; then
-              mkdir -p ${{ env.WINE64_DIR }}/amd64/nls
-              cp -af /opt/nls-backup/. ${{ env.WINE64_DIR }}/amd64/nls/
-              echo "已从备份恢复完整 nls 目录"
-            else
-              echo "错误: 无法恢复 nls 目录"
-              exit 1
-            fi
-          fi
-          # 复制整个构建目录，使用 -aL 选项（归档且跟随符号链接）
-          cp -aL ${{ env.WINE64_DIR }}/amd64/. /opt/wine64-native/
-          chmod -R +x /opt/wine64-native/tools/*/
-          chmod -R +r /opt/wine64-native/nls
-          # 验证复制后的文件是否为普通文件（不是符号链接）
-          if [ ! -f /opt/wine64-native/nls/locale.nls ]; then
-            echo "警告: 复制后 locale.nls 丢失或为无效符号链接，尝试从备份恢复"
-            if [ -d /opt/nls-backup ]; then
-              mkdir -p /opt/wine64-native/nls
-              cp -af /opt/nls-backup/. /opt/wine64-native/nls/
-              echo "已从备份恢复 nls 目录到目标目录"
-            else
-              echo "错误: 无法恢复 nls 目录"
-              exit 1
-            fi
-          fi
-          echo "复制后 locale.nls 存在，大小: $(wc -c < /opt/wine64-native/nls/locale.nls) 字节"
-
-      - name: Termux
-        run: |
-          cd ${{ env.WINE_SOURCE_DIR }}/source
-          # find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) -exec grep -l "/tmp" {} \; 2>/dev/null | xargs sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g' 2>/dev/null || true
-          # find server -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
-          # find . -name "file.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
-          # find . -name "loader.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
-          # find . -name "server.c" -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + 2>/dev/null || true
-
-          # 1. InterlockedOr 타입 캐스팅 수정 (atiadlxx)
-          FILE="dlls/atiadlxx/atiadlxx_main.c"
-          if [ -f "$FILE" ]; then
-            if grep -q 'InterlockedOr(&dummy, 0)' "$FILE"; then
-              # dummy 변수 선언을 long으로 변경하여 _InterlockedOr와의 호환성 확보
-              sed -i 's/LONG dummy/long dummy/g' "$FILE"
-              sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
-              echo "✔ InterlockedOr patched with explicit casting"
-            else
-              echo "✔ InterlockedOr already patched or not found"
-            fi
-          fi
-
-          FILE3="dlls/wdscore/wdscore.spec"
-          if [ -f "$FILE3" ]; then
-            if grep -q '@ stub' "$FILE3"; then
-              echo "Cleaning wdscore.spec stubs..."
-              sed -i '/CDynamicArray/d' "$FILE3"
-              echo "✔ wdscore stubs cleaned"
-            else
-              echo "✔ wdscore already cleaned or not found"
-            fi
-          fi
-
-          # 2. ntdll virtual.c 미초기화 변수 방어 (컴파일러 경고 해결)
-          FILE="dlls/ntdll/unix/virtual.c"
-          if [ -f "$FILE" ]; then
-            if grep -q 'unsigned int vprot, sec_flags;' "$FILE"; then
-              echo "Fixing uninitialized vprot in virtual.c..."
-              sed -i 's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' "$FILE"
-            fi
-          fi
-
-          FILE="dlls/ntdll/unix/loader.c"
-          if ! grep -q '/aarch64-windows' "$FILE"; then
-            echo "Patching PE directory mapping..."
-            sed -i 's|/x86_64-windows|/aarch64-windows|g' "$FILE"
-          fi
-
-          FILE="dlls/ntdll/loader.c"
-          if [ -f "$FILE" ]; then
-            if grep -q 'xtajit64\.dll' "$FILE"; then
-              echo "Replacing xtajit64.dll with libarm64ecfex.dll..."
-              sed -i 's|xtajit64\.dll|libarm64ecfex.dll|g' "$FILE"
-            fi
-            if grep -q 'ULONG buffer\[16\];' "$FILE"; then
-              echo "Increasing loader buffer size from 16 to 32..."
-              sed -i 's/ULONG buffer\[16\];/ULONG buffer\[32\];/g' "$FILE"
-            fi
-          fi
-
-          INF="loader/wine.inf.in"
-          if [ -f "$INF" ] && ! grep -q 'libarm64ecfex.dll' "$INF"; then
-              echo "Patching wine.inf for FEX libraries..."
-              sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' "$INF"
-              sed -i 's/xtajit\.dll/libwow64fex.dll/g' "$INF"
-              sed -i '/^;;KnownDLLs$/a HKLM,%Control%\\Session Manager\\KnownDLLs,"libarm64ecfex",,"libarm64ecfex.dll"\nHKLM,%Control%\\Session Manager\\KnownDLLs,"libwow64fex",,"libwow64fex.dll"' "$INF"    
-              echo "✔ wine.inf integrated patch applied."
-          fi
-
-          # 5. FEX YMM State 대응 (unwind.h)
-          FILE="dlls/ntdll/unwind.h"
-          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
-            echo "Patching unwind flags for FEX YMM state..."
-            sed -i '/ctx_flags_x64_to_arm/,/}/ {
-              /CONTEXT_AMD64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;/
-            }' "$FILE"
-            sed -i '/ctx_flags_arm_to_x64/,/}/ {
-              /CONTEXT_ARM64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_ARM64_FEX_YMMSTATE) ret |= CONTEXT_AMD64_XSTATE;/
-            }' "$FILE"
-          fi
-
-          # 6. winnt.h FEX 플래그 정의 추가
-          FILE="include/winnt.h"
-          if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
-            echo "Patching winnt.h to match FEX diff..."
-            sed -i 's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)\&dummy, 0)|g' "$FILE"
-            sed -i 's/^#define CONTEXT_ARM64_X18.*/#define CONTEXT_ARM64_X18             (CONTEXT_ARM64 | 0x00000010)/' "$FILE"
-            if ! grep -q 'CONTEXT_ARM64_XSTATE' "$FILE"; then
-              sed -i '/CONTEXT_ARM64_X18/a #define CONTEXT_ARM64_XSTATE          (CONTEXT_ARM64 | 0x00000020)' "$FILE"
-            fi
-            sed -i '/CONTEXT_ARM64_XSTATE/a #define CONTEXT_ARM64_FEX_YMMSTATE   (CONTEXT_ARM64 | 0x00000040)' "$FILE"
-          fi
-
-          # 8. Vulkan VRAM Faking 적용
-          FILE="dlls/winevulkan/vulkan.c"
-          if [ -f "$FILE" ] && ! grep -q 'WINE_VRAM_SIZE' "$FILE" ; then
-            echo "Applying VRAM faking to winevulkan..."
-            sed -i '/p_vkGetPhysicalDeviceMemoryProperties(host_physical_device, \&object->memory_properties);/a \
-              { \
-                  const char *v = getenv("WINE_VRAM_SIZE"); \
-                  uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
-                  uint32_t k; \
-                  for (k=0; k<object->memory_properties.memoryHeapCount; k++) \
-                      if (object->memory_properties.memoryHeaps[k].flags \& VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
-                          object->memory_properties.memoryHeaps[k].size = s; \
-              }' "$FILE"
-          fi
-
-          export PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
-
-          PATCH_FILES="1.patch 2.patch"
-          echo "Applying external patches from $PATCH_BASE..."
-          for FILE in $PATCH_FILES; do
-            URL="${PATCH_BASE}/${FILE}"
-            PATCH_FILE="$FILE"           
-            echo "--------------------------------------------"
-            echo "Downloading $PATCH_FILE..."
-            wget -q -O "$PATCH_FILE" "$URL"
-            
-            if git apply --check "$PATCH_FILE" > /dev/null 2>&1; then
-                echo "✔ $PATCH_FILE can be applied cleanly"
-                git apply --whitespace=fix "$PATCH_FILE"
-            elif git apply --3way --check "$PATCH_FILE" > /dev/null 2>&1; then
-                echo "⚠ Applying $PATCH_FILE with 3-way merge"
-                git apply --3way --whitespace=fix "$PATCH_FILE"
-            else
-                echo "❌ $PATCH_FILE failed, generating rejects"
-                git apply --reject --whitespace=fix "$PATCH_FILE" || true
-                find . -name "*.rej"
-            fi
-          done
-          echo "--------------------------------------------"
-          echo "✔ All patch processes completed"
-
-          if [ ! -f "configure" ]; then
-            ./autogen.sh
-          fi
-
-      # ------------------------------------------------------------
-      # 11. 交叉编译 ARM64 WOW64（使用复制后的目录作为工具目录）
-      #     修改：移除 --with-wine64，仅使用 --with-wine-tools 以强制重新编译 programs
-      # ------------------------------------------------------------
-      - name: 交叉编译 ARM64 WOW64
-        run: |
-          cd ${{ env.WINE_SOURCE_DIR }}/source
-          mkdir -p build-arm64
-          cd build-arm64
-
-          export PATH="/opt/${{ env.LLVMMINGW_NAME }}/bin:$PATH"
-          export deps="/data/data/com.termux/files/usr"
-          export depsg="/data/data/com.termux/files/usr/glibc"
-          export PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig
-          export PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
-
-          export CC="clang --target=aarch64-linux-gnu"
-          export CXX="clang++ --target=aarch64-linux-gnu"
-          export CROSSCC="arm64ec-w64-mingw32-clang"
-          export CROSSCXX="arm64ec-w64-mingw32-clang++"
-
-          export CFLAGS="-O2 -pipe"
-          export CXXFLAGS="-O2 -pipe"
-          export CROSSCFLAGS="-O2 -pipe"
-          export CROSSCXXFLAGS="-O2 -pipe"
-
-          export GSTREAMER_CFLAGS="-I$depsg/include/gstreamer-1.0 -I$depsg/include/glib-2.0 -I$depsg/lib/glib-2.0/include -I$depsg/glib-2.0/include -I$depsg/lib/gstreamer-1.0/include"
-          export GSTREAMER_LIBS="-L$depsg/lib -lgstgl-1.0 -lgstapp-1.0 -lgstvideo-1.0 -lgstaudio-1.0 -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgsttag-1.0 -lgstbase-1.0 -lgstreamer-1.0"
-          export FFMPEG_CFLAGS="-I$depsg/include/libavutil -I$depsg/include/libavcodec -I$depsg/include/libavformat"
-          export FFMPEG_LIBS="-L$depsg/lib -lavutil -lavcodec -lavformat"
-          export PULSE_CFLAGS="-I$deps/include/pulse"
-          export PULSE_LIBS="-L$deps/lib/pulseaudio -lpulse"
-          export LDFLAGS="-s -L/usr/lib/aarch64-linux-gnu -Wl,--dynamic-linker=/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1 -Wl,-rpath=/data/data/com.termux/files/usr/glibc/lib"
-          export WINE_NLS_DIR=/opt/wine64-native/nls
-
-          echo "使用 Wine64 构建目录（作为工具目录）: /opt/wine64-native"
-          echo "WINE_NLS_DIR=$WINE_NLS_DIR"
-
-          # 关键修改：仅使用 --with-wine-tools，不使用 --with-wine64 
+          cd tools-build
           ../configure \
-            --build=x86_64-pc-linux-gnu \
-            --host=aarch64-linux-gnu \
-            --prefix=/tmp/wine-install-wow64 \
+            --without-x \
+            --without-wayland \
+            --without-vulkan \
+            --without-gstreamer
+
+          make -j$(nproc) __tooldeps__ nls/all
+
+          cp -r ./* ../wine-tools
+
+# ------------------------------------------------------------
+# 7. Build Wine (Android target)
+# ------------------------------------------------------------
+      - name: 🔨 Build Wine ARM64EC
+        run: |
+          export TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="/opt/llvm-mingw/bin:$PATH"
+
+          export TARGET=aarch64-linux-android
+          export API=28
+          export CC="$TOOLCHAIN/clang --target=$TARGET$API"
+          export CXX="$TOOLCHAIN/clang++ --target=$TARGET$API"
+          export AS="$CC"
+
+          export PREFIX_DIR="/data/data/com.termux/files/usr"
+
+          export PKG_CONFIG_LIBDIR=$PREFIX_DIR/lib/pkgconfig:$PREFIX_DIR/share/pkgconfig
+          export CPPFLAGS="-I$PREFIX_DIR/include"
+          export CFLAGS="-I$PREFIX_DIR/include -Wno-implicit-function-declaration"
+          export LDFLAGS="-L$PREFIX_DIR/lib"
+          export LIBRARY_PATH="$PREFIX_DIR/lib"
+
+          cd wine
+
+          mkdir build && cd build
+
+          ../configure \
+            --host=$TARGET \
+            --prefix=/usr \
             --with-mingw=clang \
-            --enable-archs=arm64ec,aarch64,i386 \
-            --with-wine-tools=/opt/wine64-native \
+            --with-wine-tools=../wine-tools \
+            --enable-archs=arm64ec \
             --enable-win64 \
-            --with-vulkan \
-            --enable-nls \
-            --without-pulse \
-            --without-ffmpeg \
-            --disable-win16 \
-            --disable-opencl \
-            --without-alsa \
             --disable-tests \
-            --without-capi \
-            --without-coreaudio \
+            --without-alsa \
             --without-cups \
             --without-dbus \
             --without-gphoto \
-            --without-gssapi \
-            --without-krb5 \
-            --without-alsa \
-            --without-netapi \
             --without-oss \
             --without-pcap \
-            --without-pcsclite \
             --without-sane \
             --without-udev \
-            --without-usb \
             --without-v4l2 \
             --without-wayland \
             --without-xinerama \
-            --with-xshm \
-            --without-xxf86vm
-            
-          make -j$(nproc) > /dev/null
-          make install
+            --without-xxf86vm \
+            --enable-wineandroid_drv=no
 
-          # 验证安装是否生成 bin 目录（若缺失则报错）
-          if [ ! -d /tmp/wine-install-wow64/bin ]; then
-            echo "错误: /tmp/wine-install-wow64/bin 目录不存在，安装可能不完整"
-            exit 1
-          fi
+          make -j$(nproc)
 
-      - name: Shared Library Path Fix
+# ------------------------------------------------------------
+# 8. Fix Android linker issues (important)
+# ------------------------------------------------------------
+      - name: 🔁 Rebuild with android-shmem
         run: |
-          set -e
-          TARGET_PREFIX="/tmp/wine-install-wow64"
-          BUILD_DIR="${{ env.WINE_SOURCE_DIR }}/source/build-arm64"
-          SOURCE_DIR="${{ env.WINE64_DIR }}/source"
-          NATIVE_NLS_DIR="/opt/wine64-native/nls"
-          
-          # Termux는 무조건 aarch64 환경임
-          WINE_ARCH="aarch64"
+          export LDFLAGS="-L/data/data/com.termux/files/usr/lib -landroid-shmem -landroid-spawn"
 
-          echo "=== 1. 구조 생성 및 모든 라이브러리 수집 ==="
-          mkdir -p "$TARGET_PREFIX/bin"
-          mkdir -p "$TARGET_PREFIX/lib/wine/$WINE_ARCH-unix"
-          mkdir -p "$TARGET_PREFIX/share/wine/nls"
-          mkdir -p "$TARGET_PREFIX/share/wine/fonts"
+          cd wine/build
+          make -j$(nproc)
 
-          # [중요] 삭제 전 모든 .so를 먼저 수집 (원본 확보)
-          find "$BUILD_DIR" -name "ntdll.so" -exec cp -vL {} "$TARGET_PREFIX/lib/wine/$WINE_ARCH-unix/" \;
-          find "$BUILD_DIR/dlls" -name "*.so" -exec cp -vL {} "$TARGET_PREFIX/lib/wine/$WINE_ARCH-unix/" \;
-          find "$BUILD_DIR/programs" -name "*.so" -exec cp -vL {} "$TARGET_PREFIX/lib/wine/$WINE_ARCH-unix/" \;
-
-          # 수집 완료 후 불필요한 폴더 제거 (이미 복사본이 있으므로 안전)
-          if [ -d "$BUILD_DIR/dlls/ntdll/aarch64-windows" ]; then
-              echo "✔ aarch64-windows 감지됨. x86_64-unix 찌꺼기 정리."
-              rm -rf "$TARGET_PREFIX/lib/wine/x86_64-unix"
-          fi
-
-          echo "=== 2. 리소스 복사 (NLS, Fonts) ==="
-          [ -d "$NATIVE_NLS_DIR" ] && cp -v "$NATIVE_NLS_DIR"/*.nls "$TARGET_PREFIX/share/wine/nls/" 2>/dev/null || true
-          [ -d "$SOURCE_DIR/fonts" ] && cp -v "$SOURCE_DIR/fonts"/*.ttf "$SOURCE_DIR/fonts"/*.fon "$TARGET_PREFIX/share/wine/fonts/" 2>/dev/null || true
-
-          echo "=== 3. 로더 및 실행 파일 복사 ==="
-          PROGRAMS="wine wineserver wineboot winecfg regedit"
-          for prog in $PROGRAMS; do
-              found=$(find "$BUILD_DIR" -type f -name "$prog" -executable | head -1)
-              [ -n "$found" ] && cp -vL "$found" "$TARGET_PREFIX/bin/" || echo "⚠ $prog 찾지 못함"
-          done
-
-          echo "=== 4. 심볼릭 링크 재생성 (절대 경로 에러 방어) ==="
-          # ntdll.so 링크가 실제로 존재하는지 확인 후 생성
-          if [ -f "$TARGET_PREFIX/lib/wine/$WINE_ARCH-unix/ntdll.so" ]; then
-              cd "$TARGET_PREFIX/bin"
-              # 상대 경로가 확실히 맞도록 해당 디렉토리로 이동 후 링크 생성
-              ln -sf "../lib/wine/$WINE_ARCH-unix/ntdll.so" "ntdll.so"
-              echo "✔ ntdll.so 심볼릭 링크 생성 완료"
-          else
-              echo "❌ 치명적 오류: ntdll.so 원본 파일이 없습니다!"
-              exit 1
-          fi
-
-          echo "=== 최종 검증 ==="
-          ls -l "$TARGET_PREFIX/bin/ntdll.so"
-          # 링크가 가리키는 실제 파일의 존재 여부를 한 번 더 확인
-          ls -L "$TARGET_PREFIX/bin/ntdll.so" || { echo "❌ 링크가 깨졌습니다!"; exit 1; }
-
-      # ------------------------------------------------------------
-      # 13. 验证安装目录内容（可选，便于调试）
-      # ------------------------------------------------------------
-      - name: 验证安装目录内容
+# ------------------------------------------------------------
+# 9. Package
+# ------------------------------------------------------------
+      - name: 📦 Package Wine
         run: |
-          echo "安装目录 /tmp/wine-install-wow64 的内容："
-          ls -la /tmp/wine-install-wow64/
-          if [ -d /tmp/wine-install-wow64/bin ]; then
-            echo "bin 目录内容："
-            ls -la /tmp/wine-install-wow64/bin/
-          fi
-          if [ -d /tmp/wine-install-wow64/share ]; then
-            echo "share 目录内容："
-            ls -la /tmp/wine-install-wow64/share/
-          fi
+          cd wine/build
+          make install DESTDIR=/tmp/wine-install
 
-      # ------------------------------------------------------------
-      # 14. 打包
-      # ------------------------------------------------------------
-      - name: 准备打包
-        run: |
-          mkdir -p wine-package/wine 
-          cp -r /tmp/wine-install-wow64/* wine-package/wine/
+          cd /tmp/wine-install
+          tar -czf $GITHUB_WORKSPACE/wine-arm64ec-termux.tar.gz .
 
-      - name: 创建打包文件
-        run: |
-          tar -cJf ${{ env.BUILD_NAME }}.tar.xz -C wine-package wine
-          ls -lh *.tar.xz
-
-      - name: Generate checksums
-        run: |
-          sha256sum *.tar.xz > checksums.txt
-          cat checksums.txt
-
-      - name: Upload Wine WoW64 artifacts
+# ------------------------------------------------------------
+# 10. Upload
+# ------------------------------------------------------------
+      - name: ⬆️ Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Wine-${{ github.event.inputs.wine_branch || 'staging' }}-${{ github.event.inputs.wine_version || 'latest' }}-ARM64
-          path: |
-            *.tar.xz
-            checksums.txt
-          retention-days: 30
-
-      - name: Publish Wine to GitHub Release
-        uses: softprops/action-gh-release@v1
-        if: github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: wine-${{ github.event.inputs.wine_branch || 'staging' }}-${{ github.event.inputs.wine_version || 'latest' }}-arm64
-          name: Wine ${{ github.event.inputs.wine_branch || 'staging' }} ${{ github.event.inputs.wine_version || 'latest' }} (ARM64 WOW64 for Termux)
-          body: |
-            - **Wine Branch**: ${{ github.event.inputs.wine_branch || 'staging' }}
-            - **Wine Version**: ${{ github.event.inputs.wine_version || 'latest' }}
-            - **Host Architecture**: ARM64 (aarch64)
-            - **Target Windows Architectures**: i386, x86_64, arm64ec (via WOW64 emulation)
-
-            - Build Time: ${{ github.event.head_commit.timestamp }}
-            - Commit: ${{ github.sha }}
-            - Workflow: ${{ github.workflow }}
-          files: |
-            ${{ github.workspace }}/${{ env.BUILD_NAME }}.tar.xz
-            ${{ github.workspace }}/checksums.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: wine-arm64ec-termux
+          path: wine-arm64ec-termux.tar.gz

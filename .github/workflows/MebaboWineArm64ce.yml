@@ -1,168 +1,108 @@
-name: Build zWine ARM64EC (Termux Android)
+name: Build zWine ARM64 (Termux/Android)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    runs-on: ubuntu-24.04-arm
 
     steps:
-# ------------------------------------------------------------
-# 1. Clone Wine (ARM64EC repo)
-# ------------------------------------------------------------
-      - name: 📥 Clone Wine ARM64EC
-        run: |
-          git clone -b bleeding-edge https://github.com/ziad9267/wine.git wine
-          cd wine
-          git submodule update --init --recursive
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-# ------------------------------------------------------------
-# 2. Install deps (host tools)
-# ------------------------------------------------------------
-      - name: 📦 Install dependencies
+      - name: Install base dependencies
         run: |
-          sudo dpkg --add-architecture i386
+          sudo dpkg --add-architecture arm64
           sudo apt update
+
           sudo apt install -y \
-            build-essential git wget xz-utils \
-            flex bison pkg-config gettext \
-            libx11-dev:i386 libfreetype6-dev:i386 \
-            libxcursor-dev:i386 libxi-dev:i386 \
-            libxrandr-dev:i386 libxinerama-dev:i386 \
-            libxxf86vm-dev:i386 libgl1-mesa-dev:i386 \
-            libosmesa6-dev:i386 libpulse-dev:i386 \
-            libdbus-1-dev:i386 libfontconfig1-dev:i386
+            build-essential \
+            git \
+            wget \
+            curl \
+            xz-utils \
+            flex \
+            bison \
+            pkg-config \
+            python3 \
+            python3-pip \
+            libx11-dev \
+            libxext-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxfixes-dev \
+            libxcomposite-dev \
+            libxdamage-dev \
+            libxinerama-dev \
+            libxxf86vm-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libpulse-dev \
+            libdbus-1-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libgnutls28-dev \
+            libasound2-dev \
+            libudev-dev \
+            llvm \
+            clang \
+            lld \
+            mingw-w64
 
-# ------------------------------------------------------------
-# 3. Setup Termux sysroot
-# ------------------------------------------------------------
-      - name: 📱 Setup Termux sysroot
+      - name: Install LLVM MinGW (ARM64 Windows toolchain)
         run: |
-          mkdir -p imagefs
-          cd imagefs
-          wget -q https://github.com/ziad9267/termux-on-gha/releases/download/test/termuxfs.tar
-          tar xf termuxfs.tar
-          rm termuxfs.tar
-          sudo mv ./data /
-          sudo chown -R $(whoami):$(whoami) /data
+          cd /opt
+          sudo wget https://github.com/mstorsjo/llvm-mingw/releases/latest/download/llvm-mingw-20240220-ucrt-ubuntu-22.04-x86_64.tar.xz -O llvm-mingw.tar.xz
+          sudo tar -xf llvm-mingw.tar.xz
+          sudo mv llvm-mingw-* llvm-mingw
 
-# ------------------------------------------------------------
-# 4. Install LLVM MinGW (for PE)
-# ------------------------------------------------------------
-      - name: 🧰 Install LLVM MinGW
+      - name: Export toolchain
         run: |
-          wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/20250305/llvm-mingw-20250305-ucrt-ubuntu-20.04-x86_64.tar.xz
-          tar -xf llvm-mingw-*.tar.xz
-          sudo mv llvm-mingw-* /opt/llvm-mingw
+          echo "PATH=/opt/llvm-mingw/bin:$PATH" >> $GITHUB_ENV
 
-# ------------------------------------------------------------
-# 5. Setup Android NDK
-# ------------------------------------------------------------
-      - name: 🤖 Setup Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r28c
-
-# ------------------------------------------------------------
-# 6. Build Wine TOOLS (CRITICAL FIX)
-# ------------------------------------------------------------
-      - name: 🔧 Build Wine tools
+      - name: Clone Wine source
         run: |
-          cd wine
-          ./autogen.sh
-
-          mkdir tools-build
-          mkdir wine-tools
-
-          cd tools-build
-          ../configure \
-            --without-x \
-            --without-wayland \
-            --without-vulkan \
-            --without-gstreamer
-
-          make -j$(nproc) __tooldeps__ nls/all
-
-          cp -r ./* ../wine-tools
-
-# ------------------------------------------------------------
-# 7. Build Wine (Android target)
-# ------------------------------------------------------------
-      - name: 🔨 Build Wine ARM64EC
-        run: |
-          export TOOLCHAIN="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export PATH="/opt/llvm-mingw/bin:$PATH"
-
-          export TARGET=aarch64-linux-android
-          export API=28
-          export CC="$TOOLCHAIN/clang --target=$TARGET$API"
-          export CXX="$TOOLCHAIN/clang++ --target=$TARGET$API"
-          export AS="$CC"
-
-          export PREFIX_DIR="/data/data/com.termux/files/usr"
-
-          export PKG_CONFIG_LIBDIR=$PREFIX_DIR/lib/pkgconfig:$PREFIX_DIR/share/pkgconfig
-          export CPPFLAGS="-I$PREFIX_DIR/include"
-          export CFLAGS="-I$PREFIX_DIR/include -Wno-implicit-function-declaration"
-          export LDFLAGS="-L$PREFIX_DIR/lib"
-          export LIBRARY_PATH="$PREFIX_DIR/lib"
-
+          git clone https://gitlab.winehq.org/wine/wine.git
           cd wine
 
-          mkdir build && cd build
+      - name: Apply patches (optional)
+        run: |
+          cd wine
+          if [ -d "${{ github.workspace }}/patches" ]; then
+            for p in ${{ github.workspace }}/patches/*.patch; do
+              [ -f "$p" ] && patch -p1 < "$p"
+            done
+          fi
+
+      - name: Configure Wine ARM64
+        run: |
+          cd wine
+          mkdir build
+          cd build
 
           ../configure \
-            --host=$TARGET \
-            --prefix=/usr \
-            --with-mingw=clang \
-            --with-wine-tools=../wine-tools \
-            --enable-archs=arm64ec \
-            --enable-win64 \
-            --disable-tests \
-            --without-alsa \
-            --without-cups \
-            --without-dbus \
-            --without-gphoto \
-            --without-oss \
-            --without-pcap \
-            --without-sane \
-            --without-udev \
-            --without-v4l2 \
-            --without-wayland \
-            --without-xinerama \
-            --without-xxf86vm \
-            --enable-wineandroid_drv=no
+            --host=aarch64-linux-gnu \
+            --with-mingw \
+            CC=clang \
+            CXX=clang++ \
+            LD=lld
 
-          make -j$(nproc)
-
-# ------------------------------------------------------------
-# 8. Fix Android linker issues (important)
-# ------------------------------------------------------------
-      - name: 🔁 Rebuild with android-shmem
+      - name: Build Wine
         run: |
-          export LDFLAGS="-L/data/data/com.termux/files/usr/lib -landroid-shmem -landroid-spawn"
-
           cd wine/build
           make -j$(nproc)
 
-# ------------------------------------------------------------
-# 9. Package
-# ------------------------------------------------------------
-      - name: 📦 Package Wine
+      - name: Package build
         run: |
           cd wine/build
-          make install DESTDIR=/tmp/wine-install
+          tar -czf wine-arm64.tar.gz *
 
-          cd /tmp/wine-install
-          tar -czf $GITHUB_WORKSPACE/wine-arm64ec-termux.tar.gz .
-
-# ------------------------------------------------------------
-# 10. Upload
-# ------------------------------------------------------------
-      - name: ⬆️ Upload artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wine-arm64ec-termux
-          path: wine-arm64ec-termux.tar.gz
+          name: wine-arm64
+          path: wine/build/wine-arm64.tar.gz

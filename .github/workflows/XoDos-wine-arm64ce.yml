@@ -12,8 +12,6 @@ jobs:
         run: |
           git clone https://github.com/ziad9267/wine.git
           cd wine
-          # Optionally pin a specific commit:
-          # git checkout <commit-hash>
 
       - name: Install dependencies (with multilib for 32-bit host tools)
         run: |
@@ -77,7 +75,6 @@ jobs:
           sudo mv data /data
           sudo chown -R $(whoami):$(whoami) /data
           mkdir -p /data/data/com.termux/files/usr/tmp
-          mkdir -p /data/data/com.xodos/files/usr/tmp         
           ls -la /data/data/com.termux/files/usr/
 
       # =========================
@@ -122,14 +119,15 @@ jobs:
           INF="loader/wine.inf.in"
           [ -f "$INF" ] && sed -i 's/xtajit64\.dll/libarm64ecfex.dll/g' "$INF"
 
-          echo "== 8. FEX YMM state support (unwind.h) =="
+          echo "== 8. FEX YMM state support (unwind.h) - fixed escaping =="
           FILE="dlls/ntdll/unwind.h"
           if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
+            # Properly escape & inside sed
             sed -i '/ctx_flags_x64_to_arm/,/}/ {
-              /CONTEXT_AMD64_FLOATING_POINT/ s/$/\n          if (flags & CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;/
+              /CONTEXT_AMD64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;/
             }' "$FILE"
             sed -i '/ctx_flags_arm_to_x64/,/}/ {
-              /CONTEXT_ARM64_FLOATING_POINT/ s/$/\n          if (flags & CONTEXT_ARM64_FEX_YMMSTATE) ret |= CONTEXT_AMD64_XSTATE;/
+              /CONTEXT_ARM64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_ARM64_FEX_YMMSTATE) ret |= CONTEXT_AMD64_XSTATE;/
             }' "$FILE"
           fi
 
@@ -191,7 +189,6 @@ jobs:
           fi
 
           echo "== 13. Apply external patches (if any) =="
-          # The ziad9267 repo may already include needed patches, but we keep this for extra ones.
           PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
           for p in 1.patch 2.patch; do
             wget -q "$PATCH_BASE/$p" -O "$p" || continue

@@ -1,4 +1,4 @@
-name: zWine ARM64 (Termux + Patches + VRAM)
+name: zzWine ARM64 (Termux + Patches + VRAM)
 
 on:
   workflow_dispatch:
@@ -142,10 +142,10 @@ jobs:
       # =========================
       # BUILD
       # =========================
-      - name: Build Wine tools
+      - name: Build Wine tools (host, 32-bit)
         run: |
           cd wine
-          ./configure --without-x
+          ./configure --without-x --without-freetype
           make -j$(nproc) __tooldeps__
 
       - name: Configure Wine (ARM64 Android)

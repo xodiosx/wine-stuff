@@ -1,4 +1,4 @@
-name: Wine ARM64ce zxm (Termux + Proton Patches + VRAM)
+name: Wine ARM64CE zxm (Termux + Proton Patches + VRAM)
 
 on:
   workflow_dispatch:
@@ -6,6 +6,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # Required to create releases
 
     steps:
       - name: Clone Wine (from ziad9267, includes Proton patches)
@@ -122,7 +124,6 @@ jobs:
           echo "== 8. FEX YMM state support (unwind.h) - fixed escaping =="
           FILE="dlls/ntdll/unwind.h"
           if [ -f "$FILE" ] && ! grep -q 'CONTEXT_ARM64_FEX_YMMSTATE' "$FILE"; then
-            # Properly escape & inside sed
             sed -i '/ctx_flags_x64_to_arm/,/}/ {
               /CONTEXT_AMD64_FLOATING_POINT/ s/$/\n          if (flags \& CONTEXT_AMD64_XSTATE) ret |= CONTEXT_ARM64_FEX_YMMSTATE;/
             }' "$FILE"
@@ -266,11 +267,19 @@ jobs:
           name: wine-termux-arm64-proton-vram
           path: wine-termux-arm64-proton-vram.tar.gz
 
-      # Optional: Create a GitHub Release
-      - name: Create Release and Upload Asset
+      # =========================
+      # CREATE GITHUB RELEASE
+      # =========================
+      - name: Generate release tag
+        id: release_tag
+        run: |
+          TAG="wine-termux-${{ github.run_number }}-$(date +'%Y%m%d-%H%M%S')"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: wine-termux-${{ github.run_number }}-$(date +'%Y%m%d-%H%M%S')
+          tag_name: ${{ steps.release_tag.outputs.tag }}
           name: "Wine ARM64 for Termux (Proton + VRAM patches)"
           body: |
             Automated Wine build for Termux (Android).

@@ -1,4 +1,4 @@
-name: Wine ARM64 (Termux Android Fixed)
+name: Wine zARM64 (Termux + Patches + VRAM)
 
 on:
   workflow_dispatch:
@@ -8,129 +8,178 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout Wine source
+      - name: Clone Wine
         run: |
           git clone https://gitlab.winehq.org/wine/wine.git
           cd wine
+          # Optionally pin a specific commit/tag for reproducibility:
+          # git checkout wine-9.0
 
-      - name: Install dependencies (FIXED)
+      - name: Install dependencies (NO i386)
         run: |
           sudo apt update
-
-          # ❌ Removed ALL i386 (critical fix)
           sudo apt install -y \
-            build-essential \
-            git \
-            wget \
-            curl \
-            xz-utils \
-            flex \
-            bison \
-            pkg-config \
-            gettext \
-            icoutils \
-            fontforge-nox \
-            libx11-dev \
-            libxext-dev \
-            libxrandr-dev \
-            libxrender-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxfixes-dev \
-            libxcomposite-dev \
-            libxdamage-dev \
-            libxinerama-dev \
-            libxxf86vm-dev \
-            libgl1-mesa-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            libpulse-dev \
-            libdbus-1-dev \
-            libfontconfig-dev \
-            libfreetype-dev \
-            libgnutls28-dev \
-            libasound2-dev \
-            libudev-dev \
-            llvm \
-            clang \
-            lld
+            build-essential git wget curl xz-utils flex bison pkg-config \
+            gettext icoutils fontforge-nox \
+            libx11-dev libxext-dev libxrandr-dev libxrender-dev \
+            libxcursor-dev libxi-dev libxfixes-dev libxcomposite-dev \
+            libxdamage-dev libxinerama-dev libxxf86vm-dev \
+            libgl1-mesa-dev libvulkan-dev libwayland-dev \
+            libpulse-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype-dev libgnutls28-dev \
+            libasound2-dev libudev-dev \
+            llvm clang lld
 
-      - name: Install LLVM MinGW (ARM64 Windows toolchain)
+      # =========================
+      # LLVM MinGW (dynamic latest)
+      # =========================
+      - name: Cache LLVM MinGW
+        id: cache-llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: /opt/llvm-mingw
+          key: llvm-mingw-latest-${{ runner.os }}
+
+      - name: Install LLVM MinGW (if not cached)
+        if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
         run: |
           cd /opt
-          sudo wget https://github.com/mstorsjo/llvm-mingw/releases/latest/download/llvm-mingw-20240220-ucrt-ubuntu-22.04-x86_64.tar.xz -O llvm-mingw.tar.xz
+          # Get latest release tag (e.g., 20260407)
+          LATEST_TAG=$(curl -s https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest | grep -Po '"tag_name": "\K[^"]*')
+          ASSET_NAME="llvm-mingw-${LATEST_TAG}-ucrt-ubuntu-22.04-x86_64.tar.xz"
+          DOWNLOAD_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${LATEST_TAG}/${ASSET_NAME}"
+          echo "Downloading $DOWNLOAD_URL"
+          sudo wget --quiet "$DOWNLOAD_URL" -O llvm-mingw.tar.xz
           sudo tar -xf llvm-mingw.tar.xz
-          sudo mv llvm-mingw-* llvm-mingw
+          # Rename extracted directory to a fixed name
+          EXTRACTED_DIR=$(tar tf llvm-mingw.tar.xz | head -1 | cut -f1 -d"/")
+          sudo mv "$EXTRACTED_DIR" llvm-mingw
+          sudo rm llvm-mingw.tar.xz
 
-      - name: Setup PATH
-        run: |
-          echo "PATH=/opt/llvm-mingw/bin:$PATH" >> $GITHUB_ENV
+      - name: Export PATH (LLVM MinGW)
+        run: echo "PATH=/opt/llvm-mingw/bin:$PATH" >> $GITHUB_ENV
 
-      - name: Setup Android SDK + NDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup NDK
+      # =========================
+      # Android NDK
+      # =========================
+      - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r28c
 
-      - name: Prepare Termux sysroot
+      # =========================
+      # Termux sysroot
+      # =========================
+      - name: Setup Termux sysroot
         run: |
-          mkdir termux
-          cd termux
+          mkdir -p termux && cd termux
           wget https://github.com/ziad9267/termux-on-gha/releases/download/test/termuxfs.tar
           tar xf termuxfs.tar
+          # Move data to root (requires sudo)
           sudo mv data /data
           sudo chown -R $(whoami):$(whoami) /data
+          # Create missing tmp directory (used by patches)
+          mkdir -p /data/data/com.termux/files/usr/tmp
+          # Verify sysroot
+          ls -la /data/data/com.termux/files/usr/
 
-      - name: Build Wine tools (FIXED PATH)
-        run: |
-          cd wine
-          ./configure --without-x --without-wayland --without-vulkan
-
-          make -j$(nproc) __tooldeps__ nls/all
-
-          mkdir wine-tools
-          cp -r tools wine-tools/
-
-      - name: Configure Wine (FIXED)
+      # =========================
+      # PATCHING STAGE
+      # =========================
+      - name: Apply patches (VRAM + fixes)
         run: |
           cd wine
 
-          export TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export PATH="/opt/llvm-mingw/bin:$PATH"
+          echo "== Fixing /tmp paths =="
+          find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.in" -o -name "*.spec" \) \
+            -exec grep -l "/tmp" {} \; 2>/dev/null | \
+            xargs -r sed -i 's|/tmp/|/data/data/com.termux/files/usr/tmp/|g'
+
+          find server -type f \( -name "*.c" -o -name "*.h" \) \
+            -exec sed -i 's|"/tmp"|"/data/data/com.termux/files/usr/tmp"|g' {} + || true
+
+          echo "== Applying core patches =="
+
+          FILE="dlls/atiadlxx/atiadlxx_main.c"
+          [ -f "$FILE" ] && sed -i \
+            's|InterlockedOr(&dummy, 0)|_InterlockedOr((long volatile *)&dummy, 0)|g' "$FILE" || true
+
+          FILE="dlls/ntdll/unix/virtual.c"
+          [ -f "$FILE" ] && sed -i \
+            's/unsigned int vprot, sec_flags;/unsigned int vprot = 0, sec_flags = 0;/g' "$FILE" || true
+
+          FILE="dlls/ntdll/loader.c"
+          [ -f "$FILE" ] && sed -i \
+            's/ULONG buffer\[16\]/ULONG buffer[32]/g' "$FILE" || true
+
+          INF="loader/wine.inf.in"
+          [ -f "$INF" ] && sed -i \
+            's/xtajit64\.dll/libarm64ecfex.dll/g' "$INF" || true
+
+          echo "== Applying VRAM patch =="
+
+          FILE="dlls/winevulkan/vulkan.c"
+          if [ -f "$FILE" ] && ! grep -q WINE_VRAM_SIZE "$FILE"; then
+            sed -i '/vkGetPhysicalDeviceMemoryProperties/a \
+              const char *v = getenv("WINE_VRAM_SIZE"); \
+              uint64_t s = v ? (uint64_t)atoll(v)*1024*1024 : (uint64_t)2048*1024*1024; \
+              for (uint32_t i=0;i<object->memory_properties.memoryHeapCount;i++) \
+                if (object->memory_properties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) \
+                  object->memory_properties.memoryHeaps[i].size = s;' "$FILE"
+          fi
+
+          echo "== External patches =="
+          PATCH_BASE="https://raw.githubusercontent.com/mebabo1/menano/refs/heads/main/path"
+
+          for p in 1.patch 2.patch; do
+            wget -q "$PATCH_BASE/$p" -O "$p" || continue
+
+            if git apply --check "$p"; then
+              git apply "$p"
+            elif git apply --3way --check "$p"; then
+              git apply --3way "$p"
+            else
+              git apply --reject "$p" || true
+            fi
+          done
+
+      # =========================
+      # BUILD
+      # =========================
+      - name: Build Wine tools
+        run: |
+          cd wine
+          ./configure --without-x
+          make -j$(nproc) __tooldeps__
+
+      - name: Configure Wine (ARM64 Android)
+        run: |
+          cd wine
+
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="/opt/llvm-mingw/bin:$TOOLCHAIN:$PATH"
 
           export CC="$TOOLCHAIN/clang --target=aarch64-linux-android28"
           export CXX="$TOOLCHAIN/clang++ --target=aarch64-linux-android28"
 
-          export deps="/data/data/com.termux/files/usr"
+          deps="/data/data/com.termux/files/usr"
 
-          export PKG_CONFIG_PATH=$deps/lib/pkgconfig:$deps/share/pkgconfig
+          export PKG_CONFIG_PATH="$deps/lib/pkgconfig"
           export CPPFLAGS="-I$deps/include"
           export LDFLAGS="-L$deps/lib -landroid-shmem -landroid-spawn"
 
-          mkdir build
-          cd build
+          mkdir -p build && cd build
 
           ../configure \
             --host=aarch64-linux-android \
             --with-mingw=clang \
             --enable-win64 \
-            --disable-win16 \
             --disable-tests \
             --without-x \
             --without-wayland \
             --without-alsa \
             --without-cups \
             --without-dbus \
-            --without-gphoto \
-            --without-krb5 \
-            --without-oss \
-            --without-pcap \
-            --without-sane \
-            --without-udev \
-            --without-usb \
-            --without-v4l2 \
             --enable-wineandroid_drv=no
 
       - name: Build Wine
@@ -138,13 +187,13 @@ jobs:
           cd wine/build
           make -j$(nproc)
 
-      - name: Install to package
+      - name: Install to staging directory
         run: |
           cd wine/build
           make install DESTDIR=wine-out
 
-      - name: Upload build
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wine-arm64-termux
+          name: wine-arm64-termux-patched
           path: wine/build/wine-out

@@ -1,4 +1,4 @@
-name: Wine zARM64 (Termux + Patches + VRAM)
+name: zWine ARM64 (Termux + Patches + VRAM)
 
 on:
   workflow_dispatch:
@@ -12,10 +12,10 @@ jobs:
         run: |
           git clone https://gitlab.winehq.org/wine/wine.git
           cd wine
-          # Optionally pin a specific commit/tag for reproducibility:
+          # Optional: pin a specific commit/tag for reproducibility
           # git checkout wine-9.0
 
-      - name: Install dependencies (NO i386)
+      - name: Install dependencies (with multilib for 32-bit host tools)
         run: |
           sudo apt update
           sudo apt install -y \
@@ -28,7 +28,8 @@ jobs:
             libpulse-dev libdbus-1-dev \
             libfontconfig-dev libfreetype-dev libgnutls28-dev \
             libasound2-dev libudev-dev \
-            llvm clang lld
+            llvm clang lld \
+            gcc-multilib g++-multilib
 
       # =========================
       # LLVM MinGW (dynamic latest)
@@ -44,14 +45,12 @@ jobs:
         if: steps.cache-llvm-mingw.outputs.cache-hit != 'true'
         run: |
           cd /opt
-          # Get latest release tag (e.g., 20260407)
           LATEST_TAG=$(curl -s https://api.github.com/repos/mstorsjo/llvm-mingw/releases/latest | grep -Po '"tag_name": "\K[^"]*')
           ASSET_NAME="llvm-mingw-${LATEST_TAG}-ucrt-ubuntu-22.04-x86_64.tar.xz"
           DOWNLOAD_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${LATEST_TAG}/${ASSET_NAME}"
           echo "Downloading $DOWNLOAD_URL"
           sudo wget --quiet "$DOWNLOAD_URL" -O llvm-mingw.tar.xz
           sudo tar -xf llvm-mingw.tar.xz
-          # Rename extracted directory to a fixed name
           EXTRACTED_DIR=$(tar tf llvm-mingw.tar.xz | head -1 | cut -f1 -d"/")
           sudo mv "$EXTRACTED_DIR" llvm-mingw
           sudo rm llvm-mingw.tar.xz
@@ -75,12 +74,9 @@ jobs:
           mkdir -p termux && cd termux
           wget https://github.com/ziad9267/termux-on-gha/releases/download/test/termuxfs.tar
           tar xf termuxfs.tar
-          # Move data to root (requires sudo)
           sudo mv data /data
           sudo chown -R $(whoami):$(whoami) /data
-          # Create missing tmp directory (used by patches)
           mkdir -p /data/data/com.termux/files/usr/tmp
-          # Verify sysroot
           ls -la /data/data/com.termux/files/usr/
 
       # =========================

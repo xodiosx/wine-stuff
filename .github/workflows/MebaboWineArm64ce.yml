@@ -1,4 +1,4 @@
-name: zzWine ARM64 (Termux + Patches + VRAM)
+name: Wine ARM64 (Termux + Patches + VRAM)
 
 on:
   workflow_dispatch:
@@ -176,7 +176,8 @@ jobs:
             --without-alsa \
             --without-cups \
             --without-dbus \
-            --enable-wineandroid_drv=no
+            --enable-wineandroid_drv=no \
+            --with-wine-tools=..
 
       - name: Build Wine
         run: |
